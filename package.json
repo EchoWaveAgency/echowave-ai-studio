@@ -1,7 +1,7 @@
 import Head from 'next/head';
 import Image from 'next/image';
 import { useState } from 'react';
-import { BotMessageSquare, Zap, Target, Search } from 'lucide-react';
+import { Search, Zap, Target, BotMessageSquare } from 'lucide-react';
 
 export default function Home() {
   const [pageUrl, setPageUrl] = useState('');
@@ -13,18 +13,32 @@ export default function Home() {
       </Head>
 
       {/* Full Page Container with Brand Identity */}
-      <div className="min-h-screen bg-black text-white font-sans selection:bg-[#B1935B]/30 selection:text-white">
+      <div className="min-h-screen bg-black text-white font-sans selection:bg-[#B1935B]/30 selection:text-white relative overflow-hidden">
         
+        {/* Subtly Animated Background Waves/Soundscape Effect */}
+        <div className="absolute inset-0 z-0 opacity-10">
+          <svg width="100%" h="100%" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="gold-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#B1935B" />
+                <stop offset="100%" stopColor="#E6D1A2" />
+              </linearGradient>
+            </defs>
+            <path d="M0 50 Q 250 100 500 50 Q 750 0 1000 50 L 1000 100 L 0 100 Z" fill="url(#gold-gradient)"/>
+            <path d="M0 60 Q 300 120 600 60 Q 900 0 1200 60 L 1200 100 L 0 100 Z" fill="url(#gold-gradient)"/>
+          </svg>
+        </div>
+
         {/* Main Logo & Header */}
-        <header className="flex flex-col items-center justify-center pt-24 pb-16 bg-[url('/bg-waves.png')] bg-center bg-no-repeat bg-cover">
+        <header className="relative z-10 flex flex-col items-center justify-center pt-24 pb-16 bg-center bg-no-repeat bg-cover">
           <div className="relative w-64 h-64 mb-8">
             <Image 
-              src="/image_5.png" // Use the simpler logo for the header (image_5.png)
+              src="/image_9.png" // Use your golden logo image_9.png
               alt="EchoWave Media Group Logo"
               layout="fill"
               objectFit="contain"
               priority
-              className="z-10"
+              className="z-10 drop-shadow-[0_0_20px_rgba(177,147,91,0.5)]" // Soft gold drop shadow for depth
             />
             {/* Soft gold glow behind the logo */}
             <div className="absolute inset-0 w-full h-full rounded-full bg-[#B1935B]/20 blur-3xl -z-0"></div>
@@ -32,37 +46,43 @@ export default function Home() {
           <h1 className="text-5xl font-extrabold tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-[#B1935B] via-[#E6D1A2] to-[#B1935B]">
             AI STUDIO
           </h1>
-          <p className="mt-4 text-xl text-gray-400">Where ancient wisdom meets artificial intelligence.</p>
+          <p className="mt-4 text-xl text-gray-400 font-light tracking-wide uppercase">Where Ancient Wisdom Meets Artificial Intelligence</p>
         </header>
 
         {/* Main Action Area (Manus AI Integration) */}
-        <main className="max-w-7xl mx-auto px-6 py-12">
-          <div className="bg-[#111] border border-[#B1935B]/30 rounded-3xl p-12 shadow-2xl shadow-[#B1935B]/5">
-            <div className="flex items-center gap-4 mb-10">
-              <div className="p-4 rounded-2xl bg-[#B1935B]/10 border border-[#B1935B]/30">
+        <main className="relative z-10 max-w-7xl mx-auto px-6 py-12">
+          <div className="bg-[#0A0A0A] border border-[#B1935B]/20 rounded-3xl p-12 shadow-2xl shadow-[#B1935B]/5">
+            <div className="flex flex-col md:flex-row items-center gap-6 mb-10">
+              <div className="p-4 rounded-2xl bg-gradient-to-br from-[#B1935B]/20 to-black border border-[#B1935B]/30">
                 <Search className="w-10 h-10 text-[#E6D1A2]" />
               </div>
-              <div>
-                <h2 className="text-3xl font-bold tracking-tight">AI Strategy Begins Here</h2>
-                <p className="text-gray-400 mt-1">Paste your Facebook page URL below. Our AI Agent (Manus) will analyze your competitors and target audience instantly.</p>
+              <div className="text-center md:text-left">
+                <h2 className="text-3xl font-bold tracking-tight text-[#E6D1A2]">Manus AI Analysis</h2>
+                <p className="text-gray-400 mt-1">Paste your Facebook page URL below. Our AI Agent will analyze your competitors and target audience instantly.</p>
               </div>
             </div>
 
             {/* Input Form */}
-            <form className="flex gap-4">
+            <form className="flex flex-col md:flex-row gap-4">
               <input 
                 type="url" 
                 placeholder="https://www.facebook.com/yourpagename" 
                 value={pageUrl}
                 onChange={(e) => setPageUrl(e.target.value)}
-                className="flex-grow p-6 rounded-2xl bg-black border border-[#B1935B]/40 text-xl text-white placeholder:text-gray-600 focus:ring-4 focus:ring-[#B1935B]/30 focus:border-[#E6D1A2] transition-all outline-none"
+                className="flex-grow p-6 rounded-2xl bg-black border border-[#B1935B]/30 text-xl text-white placeholder:text-gray-700 focus:ring-2 focus:ring-[#B1935B]/50 focus:border-[#E6D1A2] transition-all outline-none"
               />
-              <button className="px-12 py-6 rounded-2xl bg-gradient-to-br from-[#B1935B] to-[#D6BA7A] text-black font-extrabold text-xl hover:shadow-lg hover:shadow-[#B1935B]/30 hover:scale-[1.02] transition-all duration-300">
+              <button className="px-12 py-6 rounded-2xl bg-gradient-to-br from-[#B1935B] via-[#E6D1A2] to-[#B1935B] text-black font-extrabold text-xl hover:shadow-lg hover:shadow-[#B1935B]/30 hover:scale-[1.02] transition-all duration-300">
                 Analyze with AI
               </button>
             </form>
           </div>
         </main>
+
+        {/* Brand/Positioning Footer */}
+        <footer className="relative z-10 py-10 mt-20 border-t border-white/5 text-center">
+            <p className="text-gray-600 tracking-widest text-sm">© 2026 ECHOWAVE MEDIA GROUP LTD. ALL RIGHTS RESERVED.</p>
+        </footer>
+
       </div>
     </>
   );
