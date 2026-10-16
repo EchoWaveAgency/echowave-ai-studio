@@ -426,4 +426,145 @@ describe('Phase 1 CRM Acceptance Tests', () => {
       expect(response.data.some((event: any) => event.operation === 'UPDATE')).toBe(true);
     });
   });
+
+  // Test 8: Bulk CSV Import
+  describe('Bulk CSV Lead Import', () => {
+    it('should import multiple leads from CSV file', async () => {
+      const csvContent = `name,email,phone,serviceInterest,source
+John Smith,john@example.com,+201001234567,web_design,referral
+Jane Doe,jane@example.com,+201009876543,mobile_app,email`;
+
+      const response = await mockApiClient.request('POST', '/leads/import', {
+        csvContent,
+        source: 'import',
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.data.imported).toBe(2);
+      expect(response.data.errors).toHaveLength(0);
+    });
+
+    it('should validate CSV format before import', async () => {
+      const invalidCsvContent = `invalid,format
+data,missing,email`;
+
+      const response = await mockApiClient.request('POST', '/leads/import', {
+        csvContent: invalidCsvContent,
+        source: 'import',
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.data.error).toBe('validation_error');
+    });
+  });
+
+  // Test 9: Duplicate Lead Detection
+  describe('Duplicate Lead Detection', () => {
+    it('should detect duplicate leads by email', async () => {
+      const response = await mockApiClient.request('POST', '/leads', {
+        name: 'Duplicate Test',
+        email: 'ahmed.hassan@example.com', // Same email as first test lead
+        phone: '+201005555555',
+        source: 'website',
+      });
+
+      expect(response.status).toBe(409);
+      expect(response.data.error).toBe('duplicate_error');
+      expect(response.data.existingLeadId).toBeDefined();
+    });
+  });
+
+  // Test 10: Lead-Opportunity Linking Workflow
+  describe('Lead-Opportunity Linking Workflow', () => {
+    it('should automatically link opportunity when creating for a lead', async () => {
+      const response = await mockApiClient.request('POST', '/opportunities', {
+        leadId,
+        title: 'Linked Opportunity',
+        value: 50000,
+        currency: 'EGP',
+        stage: 'prospect',
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.data.leadId).toBe(leadId);
+    });
+
+    it('should retrieve all opportunities for a lead', async () => {
+      const response = await mockApiClient.request('GET', `/leads/${leadId}/opportunities`);
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.data.opportunities)).toBe(true);
+      expect(response.data.opportunities.length).toBeGreaterThan(0);
+    });
+  });
+
+  // Test 11: Contact Attachment to Lead
+  describe('Contact Attachment to Lead', () => {
+    it('should attach created contact to existing lead', async () => {
+      const response = await mockApiClient.request('PATCH', `/leads/${leadId}`, {
+        contactId,
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.data.contactId).toBe(contactId);
+    });
+  });
+
+  // Test 12: Communication History Tracking
+  describe('Communication History Tracking', () => {
+    it('should record communication history entry for a contact', async () => {
+      const response = await mockApiClient.request('POST', `/contacts/${contactId}/communications`, {
+        type: 'email',
+        subject: 'Project Discussion',
+        body: 'Discussed project timeline and budget',
+        direction: 'outbound',
+        status: 'sent',
+      });
+
+      expect(response.status).toBe(201);
+      expect(response.data.id).toBeDefined();
+      expect(response.data.type).toBe('email');
+    });
+
+    it('should retrieve communication history for a contact', async () => {
+      const response = await mockApiClient.request('GET', `/contacts/${contactId}/communications`);
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.data.communications)).toBe(true);
+      expect(response.data.communications.length).toBeGreaterThan(0);
+    });
+  });
+
+  // Test 13: Email Notification Verification
+  describe('Email Notifications', () => {
+    it('should send email notification on new lead creation', async () => {
+      const response = await mockApiClient.request('POST', '/leads', {
+        name: 'Notification Test',
+        email: 'notify@example.com',
+        phone: '+201002222222',
+        serviceInterest: 'branding',
+        source: 'website',
+      });
+
+      expect(response.status).toBe(201);
+
+      // Verify notification was queued
+      const notificationCheck = await mockApiClient.request('GET', `/notifications?leadId=${response.data.id}`);
+      expect(notificationCheck.status).toBe(200);
+      expect(notificationCheck.data.some((n: any) => n.type === 'lead.created')).toBe(true);
+    });
+
+    it('should send email notification on lead status change to qualified', async () => {
+      const response = await mockApiClient.request('PATCH', `/leads/${leadId}`, {
+        status: 'qualified',
+      });
+
+      expect(response.status).toBe(200);
+
+      // Verify notification was queued
+      const notificationCheck = await mockApiClient.request('GET', `/notifications?leadId=${leadId}`);
+      expect(notificationCheck.status).toBe(200);
+      expect(notificationCheck.data.some((n: any) => n.type === 'lead.status_changed' && n.newStatus === 'qualified')).toBe(true);
+    });
+  });
 });
