@@ -1,70 +1,65 @@
-// POST /api/v1/payments - Create payment
+import { PaymentService } from '../../domains/integrations/services/PaymentService';
 
-import { paymentService } from '../../domains/finance/services/PaymentService';
-import { ValidationError } from '../../platform/errors/errors';
-import { defaultLogger } from '../../platform/logging/logger';
+const service = new PaymentService();
 
-export default async function handler(req: any) {
+export default async function handler(req: any, res: any) {
+  const { 'x-organization-id': organizationId } = req.headers;
+
+  if (!organizationId) {
+    return res.status(400).json({ error: 'x-organization-id header required' });
+  }
+
+  const { action, amount, currency, gatewayType, externalTransactionId, description, documentId, invoiceId, paymentMethodId } = req.body;
+
   try {
-    const organizationId = req.context?.organizationId;
-    if (!organizationId) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({
-          error: 'unauthorized',
-          message: 'Authentication required',
-        }),
-      };
-    }
-
-    const userId = req.context?.userId;
-    const { amount, currency, paymentMethod, paymentSourceId, referenceNumber, documentId, reconciliationNotes } = req.body;
-
-    const payment = await paymentService.createPayment(
-      organizationId,
-      {
+    if (action === 'create_payment') {
+      const payment = service.createPayment(
+        organizationId,
         amount,
         currency,
-        paymentMethod,
-        paymentSourceId,
-        referenceNumber,
+        gatewayType,
+        externalTransactionId,
+        description,
         documentId,
-        reconciliationNotes,
-      },
-      userId
-    );
-
-    defaultLogger.info('Payment created', {
-      organizationId,
-      paymentId: payment.id,
-      amount: payment.amount,
-      reportedBy: userId,
-    });
-
-    return {
-      statusCode: 201,
-      body: JSON.stringify(payment),
-    };
-  } catch (error) {
-    if (error instanceof ValidationError) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          error: 'validation_error',
-          message: error.message,
-          fields: error.fields,
-        }),
-      };
+        invoiceId,
+        paymentMethodId
+      );
+      return res.status(201).json(payment);
+    } else if (action === 'authorize') {
+      const { paymentId } = req.body;
+      const payment = service.authorizePayment(organizationId, paymentId);
+      return res.status(200).json(payment);
+    } else if (action === 'capture') {
+      const { paymentId } = req.body;
+      const payment = service.capturePayment(organizationId, paymentId);
+      return res.status(200).json(payment);
+    } else if (action === 'refund') {
+      const { paymentId } = req.body;
+      const payment = service.refundPayment(organizationId, paymentId);
+      return res.status(200).json(payment);
+    } else if (action === 'fail') {
+      const { paymentId, failureReason } = req.body;
+      const payment = service.failPayment(organizationId, paymentId, failureReason);
+      return res.status(200).json(payment);
+    } else if (action === 'add_method') {
+      const { methodType, displayName, last4Digits, expiryDate, cardBrand } = req.body;
+      const method = service.addPaymentMethod(
+        organizationId,
+        methodType,
+        displayName,
+        last4Digits,
+        expiryDate,
+        cardBrand
+      );
+      return res.status(201).json(method);
+    } else if (action === 'webhook_event') {
+      const { subscriptionId, eventType, payload } = req.body;
+      const event = service.createWebhookEvent(organizationId, subscriptionId, eventType, payload);
+      return res.status(201).json(event);
     }
 
-    defaultLogger.error('Failed to create payment', { error });
-
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'internal_error',
-        message: 'Failed to create payment',
-      }),
-    };
+    return res.status(400).json({ error: 'Invalid action' });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 }

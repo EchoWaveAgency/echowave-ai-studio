@@ -1,59 +1,58 @@
-// GET /api/v1/payments - List payments
+import { PaymentService } from '../../domains/integrations/services/PaymentService';
 
-import { paymentService } from '../../domains/finance/services/PaymentService';
-import { defaultLogger } from '../../platform/logging/logger';
+const service = new PaymentService();
 
-export default async function handler(req: any) {
+export default async function handler(req: any, res: any) {
+  const { 'x-organization-id': organizationId } = req.headers;
+
+  if (!organizationId) {
+    return res.status(400).json({ error: 'x-organization-id header required' });
+  }
+
+  const { paymentId, methodId, status, reconciliationId, limit = 50, offset = 0 } = req.query;
+
   try {
-    const organizationId = req.context?.organizationId;
-    if (!organizationId) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({
-          error: 'unauthorized',
-          message: 'Authentication required',
-        }),
-      };
+    if (paymentId) {
+      const payment = service.getPaymentById(organizationId, paymentId);
+      if (!payment) {
+        return res.status(404).json({ error: 'Payment not found' });
+      }
+      return res.status(200).json(payment);
     }
 
-    const status = req.query?.status;
-    const paymentMethod = req.query?.paymentMethod;
-    const startDate = req.query?.startDate;
-    const endDate = req.query?.endDate;
-    const limit = parseInt(req.query?.limit || '100');
-    const offset = parseInt(req.query?.offset || '0');
+    if (methodId) {
+      const method = service.getPaymentMethodById(organizationId, methodId);
+      if (!method) {
+        return res.status(404).json({ error: 'Payment method not found' });
+      }
+      return res.status(200).json(method);
+    }
 
-    const result = await paymentService.getOrganizationPayments(
-      organizationId,
-      {
+    if (reconciliationId) {
+      const reconciliation = service.getReconciliationById(organizationId, reconciliationId);
+      if (!reconciliation) {
+        return res.status(404).json({ error: 'Reconciliation not found' });
+      }
+      return res.status(200).json(reconciliation);
+    }
+
+    if (status) {
+      const payments = service.getPaymentsByStatus(
+        organizationId,
         status,
-        paymentMethod,
-        startDate,
-        endDate,
-      },
-      limit,
-      offset
-    );
+        parseInt(limit),
+        parseInt(offset)
+      );
+      return res.status(200).json(payments);
+    }
 
-    defaultLogger.info('Payments retrieved', {
+    const payments = service.getOrganizationPayments(
       organizationId,
-      count: result.items.length,
-      total: result.total,
-    });
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify(result),
-    };
-  } catch (error) {
-    defaultLogger.error('Failed to retrieve payments', { error });
-
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'internal_error',
-        message: 'Failed to retrieve payments',
-      }),
-    };
+      parseInt(limit),
+      parseInt(offset)
+    );
+    return res.status(200).json(payments);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 }
