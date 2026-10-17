@@ -1,0 +1,69 @@
+// GET /api/v1/proposals/{id}/line-items - Get proposal line items
+
+import { proposalService } from '../../../../domains/sales/services/ProposalService';
+import { NotFoundError } from '../../../../platform/errors/errors';
+import { defaultLogger } from '../../../../platform/logging/logger';
+
+export default async function handler(req: any) {
+  try {
+    const organizationId = req.context?.organizationId;
+    if (!organizationId) {
+      return {
+        statusCode: 401,
+        body: JSON.stringify({
+          error: 'unauthorized',
+          message: 'Authentication required',
+        }),
+      };
+    }
+
+    const proposalId = req.params.id;
+    if (!proposalId) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({
+          error: 'validation_error',
+          message: 'Proposal ID is required',
+        }),
+      };
+    }
+
+    // Verify proposal exists
+    await proposalService.getProposalById(proposalId, organizationId);
+
+    const lineItems = await proposalService.getProposalLineItems(proposalId, organizationId);
+
+    defaultLogger.info('Proposal line items retrieved', {
+      organizationId,
+      proposalId,
+      count: lineItems.length,
+    });
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        lineItems,
+      }),
+    };
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({
+          error: 'not_found',
+          message: 'Proposal not found',
+        }),
+      };
+    }
+
+    defaultLogger.error('Failed to retrieve line items', { error });
+
+    return {
+      statusCode: 500,
+      body: JSON.stringify({
+        error: 'internal_error',
+        message: 'Failed to retrieve line items',
+      }),
+    };
+  }
+}
