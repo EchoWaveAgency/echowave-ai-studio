@@ -1,5 +1,4 @@
-import { dashboardService } from '../../domains/analytics/services/DashboardService';
-import { ValidationError } from '../../platform/errors/errors';
+import { DashboardService } from '../../domains/business-intelligence/services/DashboardService';
 
 export default async function handler(req: any) {
   if (req.method !== 'POST') {
@@ -12,21 +11,27 @@ export default async function handler(req: any) {
       return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
     }
 
-    const { name, description, layout, isPublic, accessControl } = req.body;
+    const userId = req.headers['x-user-id'];
+    if (!userId) {
+      return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
+    }
+
+    const { name, description, type, layout, widgets, filters, isDefault } = req.body;
+    const dashboardService = new DashboardService({} as any);
+
     const dashboard = await dashboardService.createDashboard(organizationId, {
       name,
       description,
+      type,
       layout,
-      isPublic,
-      accessControl,
-    });
+      widgets,
+      filters,
+      isDefault,
+    }, userId);
 
     return { statusCode: 201, body: JSON.stringify(dashboard) };
   } catch (error: any) {
-    if (error instanceof ValidationError) {
-      return { statusCode: 400, body: JSON.stringify({ error: error.message }) };
-    }
     console.error('Failed to create dashboard:', error);
-    return { statusCode: 500, body: JSON.stringify({ error: 'Internal server error' }) };
+    return { statusCode: 500, body: JSON.stringify({ error: error.message || 'Internal server error' }) };
   }
 }
