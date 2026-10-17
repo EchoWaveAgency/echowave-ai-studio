@@ -1,72 +1,42 @@
-// GET /api/v1/deliverables - List deliverables for project
+import { Request, Response } from "express";
+import { DeliverableService } from "../../domains/delivery/services/DeliverableService";
 
-import { deliverableService } from '../../domains/delivery/services/DeliverableService';
-import { defaultLogger } from '../../platform/logging/logger';
+const deliverableService = new DeliverableService();
 
-export default async function handler(req: any) {
+export default async (req: Request, res: Response) => {
+  const organizationId = req.headers["x-organization-id"] as string;
+  const { projectId, deliverableId, status, approvalStatus, limit, offset } = req.query;
+
+  if (!organizationId) {
+    return res.status(400).json({ error: "Missing x-organization-id header" });
+  }
+
+  if (!projectId) {
+    return res.status(400).json({ error: "Missing projectId query parameter" });
+  }
+
   try {
-    const organizationId = req.context?.organizationId;
-    if (!organizationId) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({
-          error: 'unauthorized',
-          message: 'Authentication required',
-        }),
-      };
+    if (deliverableId) {
+      const deliverable = deliverableService.getDeliverableById(organizationId, deliverableId as string);
+      return res.json(deliverable);
     }
 
-    const projectId = req.query.projectId;
-    if (!projectId) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          error: 'validation_error',
-          message: 'projectId query parameter is required',
-        }),
-      };
-    }
-
-    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
-    const offset = parseInt(req.query.offset) || 0;
-    const status = req.query.status;
-
-    const result = await deliverableService.getProjectDeliverables(
-      projectId,
+    const deliverables = deliverableService.getProjectDeliverables(
       organizationId,
-      { status },
-      limit,
-      offset
+      projectId as string,
+      {
+        status: status as any,
+        approvalStatus: approvalStatus as any,
+        limit: limit ? parseInt(limit as string) : 50,
+        offset: offset ? parseInt(offset as string) : 0,
+      }
     );
 
-    defaultLogger.info('Deliverables retrieved', {
-      organizationId,
-      projectId,
-      count: result.items.length,
-      total: result.total,
+    res.json({
+      data: deliverables,
+      count: deliverables.length,
     });
-
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        items: result.items,
-        pagination: {
-          limit,
-          offset,
-          total: result.total,
-          hasMore: offset + limit < result.total,
-        },
-      }),
-    };
   } catch (error) {
-    defaultLogger.error('Failed to retrieve deliverables', { error });
-
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'internal_error',
-        message: 'Failed to retrieve deliverables',
-      }),
-    };
+    res.status(500).json({ error: (error as Error).message });
   }
-}
+};

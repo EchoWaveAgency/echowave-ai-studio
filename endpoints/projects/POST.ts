@@ -1,69 +1,42 @@
-// POST /api/v1/projects - Create project
+import { Request, Response } from "express";
+import { ProjectService } from "../../domains/delivery/services/ProjectService";
 
-import { projectService } from '../../domains/delivery/services/ProjectService';
-import { ValidationError } from '../../platform/errors/errors';
-import { defaultLogger } from '../../platform/logging/logger';
+const projectService = new ProjectService();
 
-export default async function handler(req: any) {
+export default async (req: Request, res: Response) => {
+  const organizationId = req.headers["x-organization-id"] as string;
+  const userId = req.headers["x-user-id"] as string;
+
+  if (!organizationId || !userId) {
+    return res.status(400).json({ error: "Missing required headers" });
+  }
+
+  const { name, description, clientId, projectManagerId, contractId, startDate, endDate, budget } = req.body;
+
+  if (!name || !clientId || !projectManagerId || !startDate || !endDate) {
+    return res.status(400).json({
+      error: "Missing required fields: name, clientId, projectManagerId, startDate, endDate",
+    });
+  }
+
   try {
-    const organizationId = req.context?.organizationId;
-    if (!organizationId) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({
-          error: 'unauthorized',
-          message: 'Authentication required',
-        }),
-      };
-    }
-
-    const userId = req.context?.userId;
-    const { clientId, contractId, name, description, startDate, targetEndDate, budget } = req.body;
-
-    const project = await projectService.createProject(
+    const project = projectService.createProject(
       organizationId,
       {
-        clientId,
-        contractId,
         name,
         description,
-        startDate,
-        targetEndDate,
+        clientId,
+        projectManagerId,
+        contractId,
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
         budget,
       },
       userId
     );
 
-    defaultLogger.info('Project created', {
-      organizationId,
-      projectId: project.id,
-      clientId,
-    });
-
-    return {
-      statusCode: 201,
-      body: JSON.stringify(project),
-    };
+    res.status(201).json(project);
   } catch (error) {
-    if (error instanceof ValidationError) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          error: 'validation_error',
-          message: error.message,
-          fields: error.context,
-        }),
-      };
-    }
-
-    defaultLogger.error('Failed to create project', { error });
-
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'internal_error',
-        message: 'Failed to create project',
-      }),
-    };
+    res.status(500).json({ error: (error as Error).message });
   }
-}
+};

@@ -1,71 +1,44 @@
-// POST /api/v1/tasks - Create task
+import { Request, Response } from "express";
+import { ProjectService } from "../../domains/delivery/services/ProjectService";
 
-import { taskService } from '../../domains/delivery/services/TaskService';
-import { ValidationError } from '../../platform/errors/errors';
-import { defaultLogger } from '../../platform/logging/logger';
+const projectService = new ProjectService();
 
-export default async function handler(req: any) {
+export default async (req: Request, res: Response) => {
+  const organizationId = req.headers["x-organization-id"] as string;
+  const userId = req.headers["x-user-id"] as string;
+
+  if (!organizationId || !userId) {
+    return res.status(400).json({ error: "Missing required headers" });
+  }
+
+  const { projectId, title, description, assignedToId, estimatedHours, startDate, dueDate, priority, milestoneId, parentTaskId } = req.body;
+
+  if (!projectId || !title || !assignedToId || !estimatedHours || !startDate || !dueDate) {
+    return res.status(400).json({
+      error: "Missing required fields: projectId, title, assignedToId, estimatedHours, startDate, dueDate",
+    });
+  }
+
   try {
-    const organizationId = req.context?.organizationId;
-    if (!organizationId) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({
-          error: 'unauthorized',
-          message: 'Authentication required',
-        }),
-      };
-    }
-
-    const userId = req.context?.userId;
-    const { projectId, phaseId, title, description, priority, dueDate, estimatedHours, assignedTo } =
-      req.body;
-
-    const task = await taskService.createTask(
+    const task = projectService.addTask(
       organizationId,
+      projectId,
       {
-        projectId,
-        phaseId,
         title,
         description,
-        priority,
-        dueDate,
+        assignedToId,
         estimatedHours,
-        assignedTo,
+        startDate: new Date(startDate),
+        dueDate: new Date(dueDate),
+        priority,
+        milestoneId,
+        parentTaskId,
       },
       userId
     );
 
-    defaultLogger.info('Task created', {
-      organizationId,
-      taskId: task.id,
-      projectId,
-    });
-
-    return {
-      statusCode: 201,
-      body: JSON.stringify(task),
-    };
+    res.status(201).json(task);
   } catch (error) {
-    if (error instanceof ValidationError) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          error: 'validation_error',
-          message: error.message,
-          fields: error.context,
-        }),
-      };
-    }
-
-    defaultLogger.error('Failed to create task', { error });
-
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'internal_error',
-        message: 'Failed to create task',
-      }),
-    };
+    res.status(500).json({ error: (error as Error).message });
   }
-}
+};

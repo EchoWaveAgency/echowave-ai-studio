@@ -1,67 +1,43 @@
-// POST /api/v1/deliverables - Create deliverable
+import { Request, Response } from "express";
+import { DeliverableService } from "../../domains/delivery/services/DeliverableService";
 
-import { deliverableService } from '../../domains/delivery/services/DeliverableService';
-import { ValidationError } from '../../platform/errors/errors';
-import { defaultLogger } from '../../platform/logging/logger';
+const deliverableService = new DeliverableService();
 
-export default async function handler(req: any) {
+export default async (req: Request, res: Response) => {
+  const organizationId = req.headers["x-organization-id"] as string;
+  const userId = req.headers["x-user-id"] as string;
+
+  if (!organizationId || !userId) {
+    return res.status(400).json({ error: "Missing required headers" });
+  }
+
+  const { projectId, name, description, type, assignedToId, dueDate, acceptanceCriteria, milestoneId, phaseId } = req.body;
+
+  if (!projectId || !name || !type || !assignedToId || !dueDate) {
+    return res.status(400).json({
+      error: "Missing required fields: projectId, name, type, assignedToId, dueDate",
+    });
+  }
+
   try {
-    const organizationId = req.context?.organizationId;
-    if (!organizationId) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({
-          error: 'unauthorized',
-          message: 'Authentication required',
-        }),
-      };
-    }
-
-    const userId = req.context?.userId;
-    const { projectId, name, description, expectedDate, fileUrls } = req.body;
-
-    const deliverable = await deliverableService.createDeliverable(
+    const deliverable = deliverableService.createDeliverable(
       organizationId,
+      projectId,
       {
-        projectId,
         name,
         description,
-        expectedDate,
-        fileUrls,
+        type,
+        assignedToId,
+        dueDate: new Date(dueDate),
+        acceptanceCriteria,
+        milestoneId,
+        phaseId,
       },
       userId
     );
 
-    defaultLogger.info('Deliverable created', {
-      organizationId,
-      deliverableId: deliverable.id,
-      projectId,
-    });
-
-    return {
-      statusCode: 201,
-      body: JSON.stringify(deliverable),
-    };
+    res.status(201).json(deliverable);
   } catch (error) {
-    if (error instanceof ValidationError) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
-          error: 'validation_error',
-          message: error.message,
-          fields: error.context,
-        }),
-      };
-    }
-
-    defaultLogger.error('Failed to create deliverable', { error });
-
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'internal_error',
-        message: 'Failed to create deliverable',
-      }),
-    };
+    res.status(500).json({ error: (error as Error).message });
   }
-}
+};

@@ -1,63 +1,33 @@
-// GET /api/v1/projects - List projects
+import { Request, Response } from "express";
+import { ProjectService } from "../../domains/delivery/services/ProjectService";
 
-import { projectService } from '../../domains/delivery/services/ProjectService';
-import { defaultLogger } from '../../platform/logging/logger';
+const projectService = new ProjectService();
 
-export default async function handler(req: any) {
+export default async (req: Request, res: Response) => {
+  const organizationId = req.headers["x-organization-id"] as string;
+  const { projectId, status, limit, offset } = req.query;
+
+  if (!organizationId) {
+    return res.status(400).json({ error: "Missing x-organization-id header" });
+  }
+
   try {
-    const organizationId = req.context?.organizationId;
-    if (!organizationId) {
-      return {
-        statusCode: 401,
-        body: JSON.stringify({
-          error: 'unauthorized',
-          message: 'Authentication required',
-        }),
-      };
+    if (projectId) {
+      const project = projectService.getProjectById(organizationId, projectId as string);
+      return res.json(project);
     }
 
-    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
-    const offset = parseInt(req.query.offset) || 0;
-    const clientId = req.query.clientId;
-    const status = req.query.status;
-
-    const result = await projectService.getOrganizationProjects(
-      organizationId,
-      {
-        clientId,
-        status,
-      },
-      limit,
-      offset
-    );
-
-    defaultLogger.info('Projects retrieved', {
-      organizationId,
-      count: result.items.length,
-      total: result.total,
+    const projects = projectService.getOrganizationProjects(organizationId, {
+      status: status as any,
+      limit: limit ? parseInt(limit as string) : 50,
+      offset: offset ? parseInt(offset as string) : 0,
     });
 
-    return {
-      statusCode: 200,
-      body: JSON.stringify({
-        items: result.items,
-        pagination: {
-          limit,
-          offset,
-          total: result.total,
-          hasMore: offset + limit < result.total,
-        },
-      }),
-    };
+    res.json({
+      data: projects,
+      count: projects.length,
+    });
   } catch (error) {
-    defaultLogger.error('Failed to retrieve projects', { error });
-
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'internal_error',
-        message: 'Failed to retrieve projects',
-      }),
-    };
+    res.status(500).json({ error: (error as Error).message });
   }
-}
+};

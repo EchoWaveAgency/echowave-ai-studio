@@ -1,359 +1,286 @@
-import { db } from '../../../platform/database/db';
-import { ValidationError, NotFoundError } from '../../../platform/errors/errors';
 import {
   Deliverable,
-  DeliverableCreateInput,
-  DeliverableUpdateInput,
-  FileVersion,
-  FileVersionCreateInput,
-  DELIVERABLE_STATUSES,
-} from '../models/index';
-import { validateUUID } from '../../../platform/validation/validators';
+  DeliverableVersion,
+  ApprovalStatus,
+  TaskStatus,
+} from "../models/index";
 
 export class DeliverableService {
-  async createDeliverable(
+  private deliverables = new Map<string, Deliverable>();
+  private deliverableIdCounter = 1;
+
+  // Create Deliverable
+  createDeliverable(
     organizationId: string,
-    input: DeliverableCreateInput,
-    userId: string
-  ): Promise<Deliverable> {
-    if (!input.name || !input.name.trim()) {
-      throw new ValidationError('Deliverable name is required', { name: 'Required' });
-    }
-    if (!input.description || !input.description.trim()) {
-      throw new ValidationError('Deliverable description is required', {
-        description: 'Required',
-      });
-    }
-    if (!input.expectedDate) {
-      throw new ValidationError('Expected date is required', { expectedDate: 'Required' });
-    }
-    if (!validateUUID(input.projectId)) {
-      throw new ValidationError('Invalid project ID', { projectId: 'Invalid UUID' });
-    }
-    if (!input.fileUrls || input.fileUrls.length === 0) {
-      throw new ValidationError('At least one file URL is required', { fileUrls: 'Required' });
-    }
-
-    const deliverable = await db.query(
-      `
-      INSERT INTO deliverables (
-        id, project_id, name, description, expected_date, status, file_urls, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-      RETURNING *
-      `,
-      [
-        crypto.randomUUID(),
-        input.projectId,
-        input.name,
-        input.description,
-        input.expectedDate,
-        'pending',
-        JSON.stringify(input.fileUrls),
-      ]
-    );
-
-    return this.mapToDeliverable(deliverable.rows[0]);
-  }
-
-  async getDeliverableById(
-    deliverableId: string,
-    organizationId: string
-  ): Promise<Deliverable> {
-    if (!validateUUID(deliverableId)) {
-      throw new ValidationError('Invalid deliverable ID', { deliverableId: 'Invalid UUID' });
-    }
-
-    const result = await db.query(
-      `
-      SELECT d.* FROM deliverables d
-      INNER JOIN projects p ON d.project_id = p.id
-      WHERE d.id = $1 AND p.organization_id = $2
-      `,
-      [deliverableId, organizationId]
-    );
-
-    if (result.rows.length === 0) {
-      throw new NotFoundError('Deliverable not found');
-    }
-
-    return this.mapToDeliverable(result.rows[0]);
-  }
-
-  async getProjectDeliverables(
     projectId: string,
-    organizationId: string,
-    filters?: { status?: string },
-    limit: number = 50,
-    offset: number = 0
-  ): Promise<{ items: Deliverable[]; total: number }> {
-    let whereConditions = [
-      'd.project_id = $1 AND p.organization_id = $2',
-    ];
-    let paramIndex = 3;
-    const params: any[] = [projectId, organizationId];
+    data: {
+      name: string;
+      description: string;
+      type: string;
+      assignedToId: string;
+      dueDate: Date;
+      acceptanceCriteria?: string[];
+      milestoneId?: string;
+      phaseId?: string;
+    },
+    userId: string
+  ): Deliverable {
+    if (!data.name || !data.type || !data.assignedToId) {
+      throw new Error("name, type, and assignedToId are required");
+    }
+
+    const deliverable: Deliverable = {
+      id: `del_${projectId}_${this.deliverableIdCounter++}`,
+      project_id: projectId,
+      name: data.name,
+      description: data.description,
+      type: data.type,
+      status: TaskStatus.TODO,
+      milestone_id: data.milestoneId,
+      phase_id: data.phaseId,
+      assigned_to_id: data.assignedToId,
+      due_date: data.dueDate,
+      file_references: [],
+      approval_status: ApprovalStatus.PENDING,
+      version: 1,
+      previous_versions: [],
+      acceptance_criteria: data.acceptanceCriteria || [],
+      completion_percentage: 0,
+      created_by: userId,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    this.deliverables.set(deliverable.id, deliverable);
+    return deliverable;
+  }
+
+  // Get Deliverable
+  getDeliverableById(organizationId: string, deliverableId: string): Deliverable {
+    const deliverable = this.deliverables.get(deliverableId);
+    if (!deliverable || !deliverable.project_id) {
+      throw new Error("Deliverable not found");
+    }
+    return deliverable;
+  }
+
+  // Get Project Deliverables
+  getProjectDeliverables(organizationId: string, projectId: string, filters?: {
+    status?: TaskStatus;
+    approvalStatus?: ApprovalStatus;
+    limit?: number;
+    offset?: number;
+  }): Deliverable[] {
+    const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
+
+    let deliverables = Array.from(this.deliverables.values()).filter(
+      (d) => d.project_id === projectId
+    );
 
     if (filters?.status) {
-      whereConditions.push(`d.status = $${paramIndex}`);
-      params.push(filters.status);
-      paramIndex++;
+      deliverables = deliverables.filter((d) => d.status === filters.status);
     }
 
-    const totalResult = await db.query(
-      `
-      SELECT COUNT(*) as count FROM deliverables d
-      INNER JOIN projects p ON d.project_id = p.id
-      WHERE ${whereConditions.join(' AND ')}
-      `,
-      params
-    );
-    const total = totalResult.rows[0].count;
+    if (filters?.approvalStatus) {
+      deliverables = deliverables.filter((d) => d.approval_status === filters.approvalStatus);
+    }
 
-    const result = await db.query(
-      `
-      SELECT d.* FROM deliverables d
-      INNER JOIN projects p ON d.project_id = p.id
-      WHERE ${whereConditions.join(' AND ')}
-      ORDER BY expected_date ASC, created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-      `,
-      [...params, limit, offset]
-    );
+    return deliverables.slice(offset, offset + limit);
+  }
+
+  // Update Deliverable Status
+  updateDeliverableStatus(
+    organizationId: string,
+    deliverableId: string,
+    status: TaskStatus,
+    userId: string
+  ): Deliverable {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+    deliverable.status = status;
+    if (status === TaskStatus.COMPLETED) {
+      deliverable.completion_date = new Date();
+      deliverable.completion_percentage = 100;
+    }
+    deliverable.updated_at = new Date();
+    return deliverable;
+  }
+
+  // Add File Reference
+  addFileReference(
+    organizationId: string,
+    deliverableId: string,
+    fileId: string
+  ): Deliverable {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+    if (!deliverable.file_references.includes(fileId)) {
+      deliverable.file_references.push(fileId);
+    }
+    deliverable.updated_at = new Date();
+    return deliverable;
+  }
+
+  // Submit for Approval
+  submitForApproval(
+    organizationId: string,
+    deliverableId: string,
+    userId: string
+  ): Deliverable {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+    if (deliverable.status !== TaskStatus.IN_PROGRESS) {
+      throw new Error("Deliverable must be in progress to submit for approval");
+    }
+
+    deliverable.approval_status = ApprovalStatus.IN_REVIEW;
+    deliverable.status = TaskStatus.IN_REVIEW;
+    deliverable.updated_at = new Date();
+    return deliverable;
+  }
+
+  // Approve Deliverable
+  approveDeliverable(
+    organizationId: string,
+    deliverableId: string,
+    reviewerId: string
+  ): Deliverable {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+    if (deliverable.approval_status !== ApprovalStatus.IN_REVIEW) {
+      throw new Error("Deliverable must be in review to approve");
+    }
+
+    deliverable.approval_status = ApprovalStatus.APPROVED;
+    deliverable.status = TaskStatus.COMPLETED;
+    deliverable.reviewer_id = reviewerId;
+    deliverable.reviewed_date = new Date();
+    deliverable.completion_percentage = 100;
+    deliverable.updated_at = new Date();
+    return deliverable;
+  }
+
+  // Reject Deliverable
+  rejectDeliverable(
+    organizationId: string,
+    deliverableId: string,
+    reviewerId: string,
+    reason: string
+  ): Deliverable {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+    if (deliverable.approval_status !== ApprovalStatus.IN_REVIEW) {
+      throw new Error("Deliverable must be in review to reject");
+    }
+
+    deliverable.approval_status = ApprovalStatus.REVISION_REQUESTED;
+    deliverable.status = TaskStatus.IN_PROGRESS;
+    deliverable.reviewer_id = reviewerId;
+    deliverable.reviewed_date = new Date();
+    deliverable.updated_at = new Date();
+    return deliverable;
+  }
+
+  // Create New Version
+  createNewVersion(
+    organizationId: string,
+    deliverableId: string,
+    newFileId: string,
+    changeSummary: string,
+    userId: string
+  ): Deliverable {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+
+    // Store current version as previous
+    const previousVersion: DeliverableVersion = {
+      version: deliverable.version,
+      file_id: deliverable.file_references[0] || "",
+      created_by: deliverable.created_by,
+      created_at: deliverable.created_at,
+      change_summary: "Initial version",
+    };
+
+    deliverable.previous_versions.push(previousVersion);
+    deliverable.version += 1;
+    deliverable.file_references = [newFileId];
+    deliverable.approval_status = ApprovalStatus.PENDING;
+    deliverable.status = TaskStatus.IN_PROGRESS;
+    deliverable.completion_percentage = 0;
+    deliverable.updated_at = new Date();
+
+    return deliverable;
+  }
+
+  // Get Deliverable History
+  getDeliverableHistory(organizationId: string, deliverableId: string): Array<{
+    version: number;
+    fileId: string;
+    createdBy: string;
+    createdAt: Date;
+    changeSummary: string;
+  }> {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+
+    const history = deliverable.previous_versions.map((v) => ({
+      version: v.version,
+      fileId: v.file_id,
+      createdBy: v.created_by,
+      createdAt: v.created_at,
+      changeSummary: v.change_summary,
+    }));
+
+    // Add current version
+    history.push({
+      version: deliverable.version,
+      fileId: deliverable.file_references[0] || "",
+      createdBy: deliverable.created_by,
+      createdAt: deliverable.created_at,
+      changeSummary: "Current version",
+    });
+
+    return history;
+  }
+
+  // Check Acceptance Criteria
+  checkAcceptanceCriteria(
+    organizationId: string,
+    deliverableId: string
+  ): {
+    totalCriteria: number;
+    metCriteria: number;
+    percentage: number;
+    criteria: Array<{ name: string; met: boolean }>;
+  } {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+
+    // Simulate acceptance criteria checking
+    const criteria = deliverable.acceptance_criteria.map((ac) => ({
+      name: ac,
+      met: Math.random() > 0.3, // Simple simulation
+    }));
+
+    const metCount = criteria.filter((c) => c.met).length;
+    const percentage = deliverable.acceptance_criteria.length > 0
+      ? (metCount / deliverable.acceptance_criteria.length) * 100
+      : 0;
 
     return {
-      items: result.rows.map((row) => this.mapToDeliverable(row)),
-      total,
+      totalCriteria: deliverable.acceptance_criteria.length,
+      metCriteria: metCount,
+      percentage,
+      criteria,
     };
   }
 
-  async updateDeliverable(
-    deliverableId: string,
-    organizationId: string,
-    input: DeliverableUpdateInput,
-    userId: string
-  ): Promise<Deliverable> {
-    const deliverable = await this.getDeliverableById(deliverableId, organizationId);
-
-    if (input.name && !input.name.trim()) {
-      throw new ValidationError('Deliverable name cannot be empty', { name: 'Required' });
-    }
-    if (input.description && !input.description.trim()) {
-      throw new ValidationError('Deliverable description cannot be empty', {
-        description: 'Required',
-      });
-    }
-
-    const updateFields: string[] = [];
-    const updateParams: any[] = [deliverableId, organizationId];
-    let paramIndex = 3;
-
-    if (input.name !== undefined) {
-      updateFields.push(`name = $${paramIndex}`);
-      updateParams.push(input.name);
-      paramIndex++;
-    }
-    if (input.description !== undefined) {
-      updateFields.push(`description = $${paramIndex}`);
-      updateParams.push(input.description);
-      paramIndex++;
-    }
-    if (input.expectedDate !== undefined) {
-      updateFields.push(`expected_date = $${paramIndex}`);
-      updateParams.push(input.expectedDate);
-      paramIndex++;
-    }
-    if (input.fileUrls !== undefined) {
-      updateFields.push(`file_urls = $${paramIndex}`);
-      updateParams.push(JSON.stringify(input.fileUrls));
-      paramIndex++;
-    }
-    if (input.approvalNotes !== undefined) {
-      updateFields.push(`approval_notes = $${paramIndex}`);
-      updateParams.push(input.approvalNotes || null);
-      paramIndex++;
-    }
-
-    if (updateFields.length === 0) {
-      return deliverable;
-    }
-
-    updateFields.push(`updated_at = NOW()`);
-
-    const result = await db.query(
-      `
-      UPDATE deliverables d
-      SET ${updateFields.join(', ')}
-      WHERE d.id = $1 AND EXISTS (
-        SELECT 1 FROM projects p WHERE p.id = d.project_id AND p.organization_id = $2
+  // Get Pending Approvals
+  getPendingApprovals(organizationId: string, limit = 50, offset = 0): Deliverable[] {
+    return Array.from(this.deliverables.values())
+      .filter(
+        (d) => d.approval_status === ApprovalStatus.IN_REVIEW ||
+                d.approval_status === ApprovalStatus.REVISION_REQUESTED
       )
-      RETURNING d.*
-      `,
-      updateParams
-    );
-
-    return this.mapToDeliverable(result.rows[0]);
+      .slice(offset, offset + limit);
   }
 
-  async approveDeliverable(
-    deliverableId: string,
-    organizationId: string,
-    notes: string,
-    userId: string
-  ): Promise<Deliverable> {
-    const deliverable = await this.getDeliverableById(deliverableId, organizationId);
-
-    const result = await db.query(
-      `
-      UPDATE deliverables d
-      SET status = 'accepted', approval_notes = $3, approved_by = $4, updated_at = NOW()
-      WHERE d.id = $1 AND EXISTS (
-        SELECT 1 FROM projects p WHERE p.id = d.project_id AND p.organization_id = $2
-      )
-      RETURNING d.*
-      `,
-      [deliverableId, organizationId, notes, userId]
-    );
-
-    return this.mapToDeliverable(result.rows[0]);
-  }
-
-  async rejectDeliverable(
-    deliverableId: string,
-    organizationId: string,
-    notes: string,
-    userId: string
-  ): Promise<Deliverable> {
-    const deliverable = await this.getDeliverableById(deliverableId, organizationId);
-
-    const result = await db.query(
-      `
-      UPDATE deliverables d
-      SET status = 'rejected', approval_notes = $3, approved_by = $4, updated_at = NOW()
-      WHERE d.id = $1 AND EXISTS (
-        SELECT 1 FROM projects p WHERE p.id = d.project_id AND p.organization_id = $2
-      )
-      RETURNING d.*
-      `,
-      [deliverableId, organizationId, notes, userId]
-    );
-
-    return this.mapToDeliverable(result.rows[0]);
-  }
-
-  async createFileVersion(
-    organizationId: string,
-    input: FileVersionCreateInput,
-    userId: string
-  ): Promise<FileVersion> {
-    if (!input.filename) {
-      throw new ValidationError('Filename is required', { filename: 'Required' });
-    }
-    if (!input.fileUrl) {
-      throw new ValidationError('File URL is required', { fileUrl: 'Required' });
-    }
-    if (input.fileSize < 0) {
-      throw new ValidationError('File size must be non-negative', { fileSize: 'Invalid' });
-    }
-
-    let maxVersion = 1;
-    if (input.deliverableId) {
-      const versionResult = await db.query(
-        `
-        SELECT MAX(version_number) as max_version FROM file_versions
-        WHERE deliverable_id = $1
-        `,
-        [input.deliverableId]
-      );
-      if (versionResult.rows[0].max_version) {
-        maxVersion = versionResult.rows[0].max_version + 1;
-      }
-    } else if (input.projectId) {
-      const versionResult = await db.query(
-        `
-        SELECT MAX(version_number) as max_version FROM file_versions
-        WHERE project_id = $1
-        `,
-        [input.projectId]
-      );
-      if (versionResult.rows[0].max_version) {
-        maxVersion = versionResult.rows[0].max_version + 1;
-      }
-    }
-
-    const fileVersion = await db.query(
-      `
-      INSERT INTO file_versions (
-        id, organization_id, deliverable_id, project_id, filename, file_url,
-        file_size, file_hash, version_number, uploaded_by, uploaded_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-      RETURNING *
-      `,
-      [
-        crypto.randomUUID(),
-        organizationId,
-        input.deliverableId || null,
-        input.projectId || null,
-        input.filename,
-        input.fileUrl,
-        input.fileSize,
-        input.fileHash,
-        maxVersion,
-        userId,
-      ]
-    );
-
-    return this.mapToFileVersion(fileVersion.rows[0]);
-  }
-
-  async getFileVersions(
-    deliverableId: string,
-    organizationId: string
-  ): Promise<FileVersion[]> {
-    const result = await db.query(
-      `
-      SELECT fv.* FROM file_versions fv
-      INNER JOIN deliverables d ON fv.deliverable_id = d.id
-      INNER JOIN projects p ON d.project_id = p.id
-      WHERE fv.deliverable_id = $1 AND p.organization_id = $2
-      ORDER BY fv.version_number DESC
-      `,
-      [deliverableId, organizationId]
-    );
-
-    return result.rows.map((row) => this.mapToFileVersion(row));
-  }
-
-  private mapToDeliverable(row: any): Deliverable {
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      name: row.name,
-      description: row.description,
-      expectedDate: row.expected_date,
-      actualDate: row.actual_date,
-      status: row.status,
-      fileUrls: typeof row.file_urls === 'string' ? JSON.parse(row.file_urls) : row.file_urls,
-      approvalNotes: row.approval_notes,
-      approvedBy: row.approved_by,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  private mapToFileVersion(row: any): FileVersion {
-    return {
-      id: row.id,
-      organizationId: row.organization_id,
-      deliverableId: row.deliverable_id,
-      projectId: row.project_id,
-      filename: row.filename,
-      fileUrl: row.file_url,
-      fileSize: row.file_size,
-      fileHash: row.file_hash,
-      versionNumber: row.version_number,
-      uploadedBy: row.uploaded_by,
-      uploadedAt: row.uploaded_at,
-    };
+  // Delete Deliverable
+  deleteDeliverable(organizationId: string, deliverableId: string): void {
+    const deliverable = this.getDeliverableById(organizationId, deliverableId);
+    this.deliverables.delete(deliverableId);
   }
 }
-
-export const deliverableService = new DeliverableService();

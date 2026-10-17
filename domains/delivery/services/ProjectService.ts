@@ -1,302 +1,359 @@
-import { db } from '../../../platform/database/db';
-import { ValidationError, NotFoundError } from '../../../platform/errors/errors';
 import {
   Project,
-  ProjectCreateInput,
-  ProjectUpdateInput,
   ProjectPhase,
-  PROJECT_STATUSES,
-} from '../models/index';
-import { validateUUID, validateNotEmpty } from '../../../platform/validation/validators';
+  ProjectStatus,
+  Milestone,
+  MilestoneStatus,
+  Task,
+  TaskStatus,
+  ProjectTeamMember,
+  ResourceRole,
+  ProjectPhaseType,
+  TaskPriority,
+} from "../models/index";
 
 export class ProjectService {
-  async createProject(
+  private projects = new Map<string, Project>();
+  private projectIdCounter = 1;
+
+  // Create Project
+  createProject(
     organizationId: string,
-    input: ProjectCreateInput,
+    data: {
+      name: string;
+      description: string;
+      clientId: string;
+      projectManagerId: string;
+      contractId?: string;
+      startDate: Date;
+      endDate: Date;
+      budget?: number;
+    },
     userId: string
-  ): Promise<Project> {
-    if (!input.name || !input.name.trim()) {
-      throw new ValidationError('Project name is required', { name: 'Required' });
-    }
-    if (!input.description || !input.description.trim()) {
-      throw new ValidationError('Project description is required', {
-        description: 'Required',
-      });
-    }
-    if (!input.startDate) {
-      throw new ValidationError('Start date is required', { startDate: 'Required' });
-    }
-    if (!input.targetEndDate) {
-      throw new ValidationError('Target end date is required', {
-        targetEndDate: 'Required',
-      });
-    }
-    if (input.startDate > input.targetEndDate) {
-      throw new ValidationError('Start date must be before target end date', {
-        startDate: 'Invalid range',
-      });
-    }
-    if (!validateUUID(input.clientId)) {
-      throw new ValidationError('Invalid client ID', { clientId: 'Invalid UUID' });
-    }
-    if (input.budget && input.budget < 0) {
-      throw new ValidationError('Budget must be non-negative', { budget: 'Invalid' });
+  ): Project {
+    if (!data.name || !data.clientId || !data.projectManagerId) {
+      throw new Error("name, clientId, and projectManagerId are required");
     }
 
-    const project = await db.query(
-      `
-      INSERT INTO projects (
-        id, organization_id, client_id, contract_id, name, description,
-        start_date, target_end_date, budget, status, created_by, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
-      RETURNING *
-      `,
-      [
-        crypto.randomUUID(),
-        organizationId,
-        input.clientId,
-        input.contractId || null,
-        input.name,
-        input.description,
-        input.startDate,
-        input.targetEndDate,
-        input.budget || null,
-        'planning',
-        userId,
-      ]
-    );
+    const project: Project = {
+      id: `proj_${organizationId}_${this.projectIdCounter++}`,
+      organization_id: organizationId,
+      contract_id: data.contractId,
+      name: data.name,
+      description: data.description,
+      status: ProjectStatus.PLANNING,
+      phases: [],
+      start_date: data.startDate,
+      end_date: data.endDate,
+      budget: data.budget,
+      budget_used: 0,
+      client_id: data.clientId,
+      project_manager_id: data.projectManagerId,
+      team_members: [],
+      milestones: [],
+      tasks: [],
+      deliverables: [],
+      risks: [],
+      issues: [],
+      timeline_variance: 0,
+      budget_variance: 0,
+      completion_percentage: 0,
+      created_by: userId,
+      updated_by: userId,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
 
-    return this.mapToProject(project.rows[0]);
+    this.projects.set(project.id, project);
+    return project;
   }
 
-  async getProjectById(projectId: string, organizationId: string): Promise<Project> {
-    if (!validateUUID(projectId)) {
-      throw new ValidationError('Invalid project ID', { projectId: 'Invalid UUID' });
+  // Get Project by ID
+  getProjectById(organizationId: string, projectId: string): Project {
+    const project = this.projects.get(projectId);
+    if (!project || project.organization_id !== organizationId) {
+      throw new Error("Project not found");
     }
-
-    const result = await db.query(
-      `SELECT * FROM projects WHERE id = $1 AND organization_id = $2`,
-      [projectId, organizationId]
-    );
-
-    if (result.rows.length === 0) {
-      throw new NotFoundError('Project not found');
-    }
-
-    return this.mapToProject(result.rows[0]);
+    return project;
   }
 
-  async getOrganizationProjects(
-    organizationId: string,
-    filters?: { clientId?: string; status?: string },
-    limit: number = 50,
-    offset: number = 0
-  ): Promise<{ items: Project[]; total: number }> {
-    let whereConditions = ['organization_id = $1'];
-    let paramIndex = 2;
-    const params: any[] = [organizationId];
+  // Get Organization Projects
+  getOrganizationProjects(organizationId: string, filters?: { status?: ProjectStatus; limit?: number; offset?: number }): Project[] {
+    const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
+    let projects = Array.from(this.projects.values()).filter(
+      (p) => p.organization_id === organizationId
+    );
 
-    if (filters?.clientId) {
-      whereConditions.push(`client_id = $${paramIndex}`);
-      params.push(filters.clientId);
-      paramIndex++;
-    }
     if (filters?.status) {
-      whereConditions.push(`status = $${paramIndex}`);
-      params.push(filters.status);
-      paramIndex++;
+      projects = projects.filter((p) => p.status === filters.status);
     }
 
-    const totalResult = await db.query(
-      `SELECT COUNT(*) as count FROM projects WHERE ${whereConditions.join(' AND ')}`,
-      params
-    );
-    const total = totalResult.rows[0].count;
+    return projects.slice(offset, offset + limit);
+  }
 
-    const result = await db.query(
-      `
-      SELECT * FROM projects
-      WHERE ${whereConditions.join(' AND ')}
-      ORDER BY created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-      `,
-      [...params, limit, offset]
+  // Update Project Status
+  updateProjectStatus(organizationId: string, projectId: string, status: ProjectStatus, userId: string): Project {
+    const project = this.getProjectById(organizationId, projectId);
+    project.status = status;
+    project.updated_by = userId;
+    project.updated_at = new Date();
+    return project;
+  }
+
+  // Add Project Phase
+  addPhase(organizationId: string, projectId: string, phaseData: {
+    name: string;
+    type: ProjectPhaseType;
+    description: string;
+    startDate: Date;
+    endDate: Date;
+    sequence: number;
+  }): ProjectPhase {
+    const project = this.getProjectById(organizationId, projectId);
+
+    const phase: ProjectPhase = {
+      id: `phase_${projectId}_${project.phases.length + 1}`,
+      project_id: projectId,
+      name: phaseData.name,
+      type: phaseData.type,
+      description: phaseData.description,
+      start_date: phaseData.startDate,
+      end_date: phaseData.endDate,
+      status: ProjectStatus.PLANNING,
+      sequence: phaseData.sequence,
+      duration_days: Math.ceil(
+        (phaseData.endDate.getTime() - phaseData.startDate.getTime()) / (1000 * 60 * 60 * 24)
+      ),
+      completion_percentage: 0,
+      dependencies: [],
+      deliverables: [],
+    };
+
+    project.phases.push(phase);
+    project.updated_at = new Date();
+    return phase;
+  }
+
+  // Add Milestone
+  addMilestone(organizationId: string, projectId: string, milestoneData: {
+    name: string;
+    description: string;
+    targetDate: Date;
+    phaseId: string;
+    assignedToId?: string;
+  }): Milestone {
+    const project = this.getProjectById(organizationId, projectId);
+
+    const milestone: Milestone = {
+      id: `milestone_${projectId}_${project.milestones.length + 1}`,
+      project_id: projectId,
+      name: milestoneData.name,
+      description: milestoneData.description,
+      target_date: milestoneData.targetDate,
+      status: MilestoneStatus.NOT_STARTED,
+      phase_id: milestoneData.phaseId,
+      assigned_to_id: milestoneData.assignedToId,
+      deliverables: [],
+      criteria: [],
+      variance_days: 0,
+    };
+
+    project.milestones.push(milestone);
+    project.updated_at = new Date();
+    return milestone;
+  }
+
+  // Add Task
+  addTask(organizationId: string, projectId: string, taskData: {
+    title: string;
+    description: string;
+    assignedToId: string;
+    estimatedHours: number;
+    startDate: Date;
+    dueDate: Date;
+    priority?: TaskPriority;
+    milestoneId?: string;
+    parentTaskId?: string;
+  }, userId: string): Task {
+    const project = this.getProjectById(organizationId, projectId);
+
+    const task: Task = {
+      id: `task_${projectId}_${project.tasks.length + 1}`,
+      project_id: projectId,
+      milestone_id: taskData.milestoneId,
+      parent_task_id: taskData.parentTaskId,
+      title: taskData.title,
+      description: taskData.description,
+      status: TaskStatus.TODO,
+      priority: taskData.priority || TaskPriority.MEDIUM,
+      assigned_to_id: taskData.assignedToId,
+      estimated_hours: taskData.estimatedHours,
+      start_date: taskData.startDate,
+      due_date: taskData.dueDate,
+      dependencies: [],
+      subtasks: [],
+      acceptance_criteria: [],
+      completion_percentage: 0,
+      tags: [],
+      created_by: userId,
+      updated_by: userId,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    project.tasks.push(task);
+    if (taskData.parentTaskId) {
+      const parentTask = project.tasks.find((t) => t.id === taskData.parentTaskId);
+      if (parentTask) {
+        parentTask.subtasks.push(task);
+      }
+    }
+    project.updated_at = new Date();
+    return task;
+  }
+
+  // Update Task Status
+  updateTaskStatus(organizationId: string, projectId: string, taskId: string, status: TaskStatus, userId: string): Task {
+    const project = this.getProjectById(organizationId, projectId);
+    const task = project.tasks.find((t) => t.id === taskId);
+    if (!task) {
+      throw new Error("Task not found");
+    }
+
+    task.status = status;
+    if (status === TaskStatus.COMPLETED) {
+      task.completion_date = new Date();
+      task.completion_percentage = 100;
+    } else if (status === TaskStatus.IN_PROGRESS) {
+      task.completion_percentage = Math.min(50, task.completion_percentage || 25);
+    }
+    task.updated_by = userId;
+    task.updated_at = new Date();
+    return task;
+  }
+
+  // Log Task Hours
+  logTaskHours(organizationId: string, projectId: string, taskId: string, hours: number, userId: string): Task {
+    const project = this.getProjectById(organizationId, projectId);
+    const task = project.tasks.find((t) => t.id === taskId);
+    if (!task) {
+      throw new Error("Task not found");
+    }
+
+    task.actual_hours = (task.actual_hours || 0) + hours;
+    task.completion_percentage = Math.min(100, (task.actual_hours / task.estimated_hours) * 100);
+    task.updated_by = userId;
+    task.updated_at = new Date();
+    return task;
+  }
+
+  // Add Team Member
+  addTeamMember(organizationId: string, projectId: string, memberData: {
+    userId: string;
+    name: string;
+    role: ResourceRole;
+    capacityPercentage: number;
+    skills: string[];
+    startDate: Date;
+    endDate?: Date;
+  }): ProjectTeamMember {
+    const project = this.getProjectById(organizationId, projectId);
+
+    const allocatedHours = (memberData.capacityPercentage / 100) * 40 * 4; // Assuming 40hr/week, 4 weeks
+    const member: ProjectTeamMember = {
+      id: `member_${projectId}_${project.team_members.length + 1}`,
+      project_id: projectId,
+      user_id: memberData.userId,
+      name: memberData.name,
+      role: memberData.role,
+      capacity_percentage: memberData.capacityPercentage,
+      allocated_hours: allocatedHours,
+      start_date: memberData.startDate,
+      end_date: memberData.endDate,
+      skills: memberData.skills,
+      assignments: [],
+    };
+
+    project.team_members.push(member);
+    project.updated_at = new Date();
+    return member;
+  }
+
+  // Update Milestone Status
+  updateMilestoneStatus(organizationId: string, projectId: string, milestoneId: string, status: MilestoneStatus): Milestone {
+    const project = this.getProjectById(organizationId, projectId);
+    const milestone = project.milestones.find((m) => m.id === milestoneId);
+    if (!milestone) {
+      throw new Error("Milestone not found");
+    }
+
+    milestone.status = status;
+    if (status === MilestoneStatus.COMPLETED) {
+      milestone.completion_date = new Date();
+    }
+
+    // Calculate variance
+    const today = new Date();
+    milestone.variance_days = Math.ceil(
+      (today.getTime() - milestone.target_date.getTime()) / (1000 * 60 * 60 * 24)
     );
+
+    project.updated_at = new Date();
+    return milestone;
+  }
+
+  // Calculate Project Health
+  getProjectHealth(organizationId: string, projectId: string): {
+    status: "on_track" | "at_risk" | "off_track";
+    completionPercentage: number;
+    timelineVariance: number;
+    budgetVariance: number;
+  } {
+    const project = this.getProjectById(organizationId, projectId);
+
+    // Calculate completion from tasks
+    const completedTasks = project.tasks.filter((t) => t.status === TaskStatus.COMPLETED).length;
+    const completionPercentage = project.tasks.length > 0 ? (completedTasks / project.tasks.length) * 100 : 0;
+
+    // Calculate timeline variance
+    const milestonesAtRisk = project.milestones.filter((m) => m.variance_days > 0).length;
+    const timelineVariance = milestonesAtRisk > 0 ? -1 : 0; // Simple variance
+
+    // Determine health status
+    let status: "on_track" | "at_risk" | "off_track" = "on_track";
+    if (timelineVariance < 0 && completionPercentage < 50) {
+      status = "off_track";
+    } else if (timelineVariance < 0 || completionPercentage < 70) {
+      status = "at_risk";
+    }
 
     return {
-      items: result.rows.map((row) => this.mapToProject(row)),
-      total,
+      status,
+      completionPercentage,
+      timelineVariance,
+      budgetVariance: project.budget_variance,
     };
   }
 
-  async updateProject(
-    projectId: string,
-    organizationId: string,
-    input: ProjectUpdateInput,
-    userId: string
-  ): Promise<Project> {
-    const project = await this.getProjectById(projectId, organizationId);
-
-    if (input.name && !input.name.trim()) {
-      throw new ValidationError('Project name cannot be empty', { name: 'Required' });
-    }
-    if (
-      input.startDate &&
-      input.targetEndDate &&
-      input.startDate > input.targetEndDate
-    ) {
-      throw new ValidationError('Start date must be before target end date', {
-        startDate: 'Invalid range',
-      });
-    }
-    if (input.budget && input.budget < 0) {
-      throw new ValidationError('Budget must be non-negative', { budget: 'Invalid' });
-    }
-
-    const updateFields: string[] = [];
-    const updateParams: any[] = [projectId, organizationId];
-    let paramIndex = 3;
-
-    if (input.name !== undefined) {
-      updateFields.push(`name = $${paramIndex}`);
-      updateParams.push(input.name);
-      paramIndex++;
-    }
-    if (input.description !== undefined) {
-      updateFields.push(`description = $${paramIndex}`);
-      updateParams.push(input.description);
-      paramIndex++;
-    }
-    if (input.startDate !== undefined) {
-      updateFields.push(`start_date = $${paramIndex}`);
-      updateParams.push(input.startDate);
-      paramIndex++;
-    }
-    if (input.targetEndDate !== undefined) {
-      updateFields.push(`target_end_date = $${paramIndex}`);
-      updateParams.push(input.targetEndDate);
-      paramIndex++;
-    }
-    if (input.budget !== undefined) {
-      updateFields.push(`budget = $${paramIndex}`);
-      updateParams.push(input.budget);
-      paramIndex++;
-    }
-    if (input.status !== undefined) {
-      updateFields.push(`status = $${paramIndex}`);
-      updateParams.push(input.status);
-      paramIndex++;
-    }
-    if (input.actualEndDate !== undefined) {
-      updateFields.push(`actual_end_date = $${paramIndex}`);
-      updateParams.push(input.actualEndDate);
-      paramIndex++;
-    }
-
-    if (updateFields.length === 0) {
-      return project;
-    }
-
-    updateFields.push(`updated_at = NOW()`);
-
-    const result = await db.query(
-      `
-      UPDATE projects
-      SET ${updateFields.join(', ')}
-      WHERE id = $1 AND organization_id = $2
-      RETURNING *
-      `,
-      updateParams
-    );
-
-    return this.mapToProject(result.rows[0]);
+  // Get Project Tasks by Status
+  getProjectTasksByStatus(organizationId: string, projectId: string, status: TaskStatus): Task[] {
+    const project = this.getProjectById(organizationId, projectId);
+    return project.tasks.filter((t) => t.status === status);
   }
 
-  async getProjectPhases(
-    projectId: string,
-    organizationId: string
-  ): Promise<ProjectPhase[]> {
-    await this.getProjectById(projectId, organizationId);
-
-    const result = await db.query(
-      `
-      SELECT * FROM project_phases
-      WHERE project_id = $1
-      ORDER BY sequence_order ASC
-      `,
-      [projectId]
-    );
-
-    return result.rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      name: row.name,
-      sequenceOrder: row.sequence_order,
-      startDate: row.start_date,
-      targetEndDate: row.target_end_date,
-      actualEndDate: row.actual_end_date,
-      status: row.status,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
+  // Delete Project
+  deleteProject(organizationId: string, projectId: string): void {
+    const project = this.getProjectById(organizationId, projectId);
+    this.projects.delete(projectId);
   }
 
-  async createPhase(
-    projectId: string,
-    organizationId: string,
-    phaseData: { name: string; sequenceOrder: number; startDate: string; targetEndDate: string }
-  ): Promise<ProjectPhase> {
-    await this.getProjectById(projectId, organizationId);
-
-    const phase = await db.query(
-      `
-      INSERT INTO project_phases (
-        id, project_id, name, sequence_order, start_date, target_end_date, status, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW(), NOW())
-      RETURNING *
-      `,
-      [
-        crypto.randomUUID(),
-        projectId,
-        phaseData.name,
-        phaseData.sequenceOrder,
-        phaseData.startDate,
-        phaseData.targetEndDate,
-      ]
-    );
-
-    return {
-      id: phase.rows[0].id,
-      projectId: phase.rows[0].project_id,
-      name: phase.rows[0].name,
-      sequenceOrder: phase.rows[0].sequence_order,
-      startDate: phase.rows[0].start_date,
-      targetEndDate: phase.rows[0].target_end_date,
-      actualEndDate: phase.rows[0].actual_end_date,
-      status: phase.rows[0].status,
-      createdAt: phase.rows[0].created_at,
-      updatedAt: phase.rows[0].updated_at,
-    };
-  }
-
-  private mapToProject(row: any): Project {
-    return {
-      id: row.id,
-      organizationId: row.organization_id,
-      clientId: row.client_id,
-      contractId: row.contract_id,
-      name: row.name,
-      description: row.description,
-      startDate: row.start_date,
-      targetEndDate: row.target_end_date,
-      actualEndDate: row.actual_end_date,
-      budget: row.budget ? parseFloat(row.budget) : undefined,
-      status: row.status,
-      createdBy: row.created_by,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+  // Get Critical Path
+  getCriticalPath(organizationId: string, projectId: string): Task[] {
+    const project = this.getProjectById(organizationId, projectId);
+    // Simplified: return tasks with dependencies or highest priority
+    return project.tasks
+      .filter((t) => t.dependencies.length > 0 || t.priority === TaskPriority.CRITICAL)
+      .sort((a, b) => b.due_date.getTime() - a.due_date.getTime());
   }
 }
-
-export const projectService = new ProjectService();
