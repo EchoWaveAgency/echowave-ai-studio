@@ -1,37 +1,38 @@
-import { reportService } from '../../domains/analytics/services/ReportService';
-import { ValidationError } from '../../platform/errors/errors';
-
-export default async function handler(req: any) {
+export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
-    return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  try {
-    const organizationId = req.headers['x-organization-id'];
-    const userId = req.user?.id;
+  const organization_id = req.headers['x-organization-id'];
+  const user_id = req.headers['x-user-id'];
 
-    if (!organizationId || !userId) {
-      return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
-    }
-
-    const { name, description, type, metrics, filters, format, schedule, recipients } = req.body;
-    const report = await reportService.createReport(organizationId, userId, {
-      name,
-      description,
-      type,
-      metrics,
-      filters,
-      format,
-      schedule,
-      recipients,
-    });
-
-    return { statusCode: 201, body: JSON.stringify(report) };
-  } catch (error: any) {
-    if (error instanceof ValidationError) {
-      return { statusCode: 400, body: JSON.stringify({ error: error.message }) };
-    }
-    console.error('Failed to create report:', error);
-    return { statusCode: 500, body: JSON.stringify({ error: 'Internal server error' }) };
+  if (!organization_id || !user_id) {
+    return res.status(400).json({ error: 'Missing organization_id or user_id headers' });
   }
+
+  const { name, description, type } = req.body;
+
+  if (!name || !type) {
+    return res.status(400).json({ error: 'Report name and type are required' });
+  }
+
+  const report = {
+    id: `report_${Date.now()}`,
+    organization_id,
+    name,
+    description,
+    type,
+    sections: [],
+    schedule: {
+      enabled: false,
+      frequency: 'monthly'
+    },
+    recipients: [],
+    created_by: user_id,
+    updated_by: user_id,
+    created_at: new Date(),
+    updated_at: new Date()
+  };
+
+  return res.status(201).json(report);
 }

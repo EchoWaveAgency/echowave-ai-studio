@@ -1,169 +1,241 @@
-import { getConnection } from '../../../platform/database/connection';
-import { ValidationError, NotFoundError } from '../../../platform/errors/errors';
-import { AnalyticsEvent, AnalyticsEventCreateInput } from '../models/index';
+import { AnalyticsEvent, AnalyticsFunnel, FunnelStep, Cohort, CohortCriteria } from '../models/index.js';
 
-export const analyticsEventService = {
-  async trackEvent(organizationId: string, input: AnalyticsEventCreateInput, userId?: string, contactId?: string): Promise<AnalyticsEvent> {
-    if (!input.eventType?.trim()) {
-      throw new ValidationError('Event type is required');
-    }
-    if (!input.category?.trim()) {
-      throw new ValidationError('Category is required');
-    }
-    if (!input.action?.trim()) {
-      throw new ValidationError('Action is required');
-    }
+export class AnalyticsEventService {
+  private events: AnalyticsEvent[] = [];
+  private funnels: Map<string, AnalyticsFunnel> = new Map();
+  private cohorts: Map<string, Cohort> = new Map();
+  private nextFunnelId = 1;
+  private nextCohortId = 1;
 
-    const connection = await getConnection();
-    const result = await connection.query(
-      `INSERT INTO analytics_events (organization_id, user_id, contact_id, event_type, category, action, label, value, properties, session_id, metadata, timestamp)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
-       RETURNING *`,
-      [organizationId, userId || null, contactId || null, input.eventType, input.category, input.action, input.label || null, input.value || null, JSON.stringify(input.properties || {}), input.sessionId || null, JSON.stringify(input.metadata || {})]
-    );
-
-    return result.rows[0];
-  },
-
-  async getEventById(eventId: string, organizationId: string): Promise<AnalyticsEvent> {
-    const connection = await getConnection();
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE id = $1 AND organization_id = $2',
-      [eventId, organizationId]
-    );
-
-    if (result.rows.length === 0) {
-      throw new NotFoundError('Event not found');
+  trackEvent(
+    organization_id: string,
+    event_type: string,
+    entity_type: string,
+    entity_id: string,
+    user_id?: string,
+    properties?: Record<string, any>,
+    context?: any
+  ): AnalyticsEvent {
+    if (!event_type || !entity_type || !entity_id) {
+      throw new Error('event_type, entity_type, and entity_id are required');
     }
 
-    return result.rows[0];
-  },
+    const id = `event_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const event: AnalyticsEvent = {
+      id,
+      organization_id,
+      event_type,
+      entity_type,
+      entity_id,
+      user_id,
+      properties: properties || {},
+      timestamp: new Date(),
+      context
+    };
 
-  async getOrganizationEvents(organizationId: string, limit: number = 100, offset: number = 0): Promise<{ items: AnalyticsEvent[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query(
-      'SELECT COUNT(*) FROM analytics_events WHERE organization_id = $1',
-      [organizationId]
+    this.events.push(event);
+    return event;
+  }
+
+  getEventsByType(organization_id: string, event_type: string): AnalyticsEvent[] {
+    return this.events.filter(e => 
+      e.organization_id === organization_id && e.event_type === event_type
     );
+  }
 
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE organization_id = $1 ORDER BY timestamp DESC LIMIT $2 OFFSET $3',
-      [organizationId, limit, offset]
+  getEventsByEntity(organization_id: string, entity_type: string, entity_id: string): AnalyticsEvent[] {
+    return this.events.filter(e =>
+      e.organization_id === organization_id && e.entity_type === entity_type && e.entity_id === entity_id
     );
+  }
 
-    return { items: result.rows, total: parseInt(countResult.rows[0].count, 10) };
-  },
-
-  async getEventsByType(organizationId: string, eventType: string, limit: number = 100, offset: number = 0): Promise<{ items: AnalyticsEvent[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query(
-      'SELECT COUNT(*) FROM analytics_events WHERE organization_id = $1 AND event_type = $2',
-      [organizationId, eventType]
+  getEventsByUser(organization_id: string, user_id: string): AnalyticsEvent[] {
+    return this.events.filter(e =>
+      e.organization_id === organization_id && e.user_id === user_id
     );
+  }
 
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE organization_id = $1 AND event_type = $2 ORDER BY timestamp DESC LIMIT $3 OFFSET $4',
-      [organizationId, eventType, limit, offset]
+  getEventsByDateRange(
+    organization_id: string,
+    start_date: Date,
+    end_date: Date
+  ): AnalyticsEvent[] {
+    return this.events.filter(e =>
+      e.organization_id === organization_id &&
+      e.timestamp >= start_date &&
+      e.timestamp <= end_date
     );
+  }
 
-    return { items: result.rows, total: parseInt(countResult.rows[0].count, 10) };
-  },
+  getEventCount(organization_id: string, event_type?: string): number {
+    return this.getEventsByType(organization_id, event_type || '').length;
+  }
 
-  async getEventsByCategory(organizationId: string, category: string, limit: number = 100, offset: number = 0): Promise<{ items: AnalyticsEvent[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query(
-      'SELECT COUNT(*) FROM analytics_events WHERE organization_id = $1 AND category = $2',
-      [organizationId, category]
-    );
+  createFunnel(
+    organization_id: string,
+    name: string,
+    description: string,
+    steps: Array<{ name: string; event_type: string }>
+  ): AnalyticsFunnel {
+    if (!name || steps.length < 2) {
+      throw new Error('Funnel name and at least 2 steps are required');
+    }
 
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE organization_id = $1 AND category = $2 ORDER BY timestamp DESC LIMIT $3 OFFSET $4',
-      [organizationId, category, limit, offset]
-    );
+    const id = `funnel_${this.nextFunnelId++}`;
+    
+    // Calculate conversion rates
+    const funnelSteps: FunnelStep[] = steps.map((step, index) => {
+      const user_count = new Set(
+        this.events
+          .filter(e => e.organization_id === organization_id && e.event_type === step.event_type)
+          .map(e => e.user_id)
+      ).size;
 
-    return { items: result.rows, total: parseInt(countResult.rows[0].count, 10) };
-  },
+      const next_step_count = index < steps.length - 1
+        ? new Set(
+            this.events
+              .filter(e => e.organization_id === organization_id && e.event_type === steps[index + 1].event_type)
+              .map(e => e.user_id)
+          ).size
+        : user_count;
 
-  async getEventsByDateRange(organizationId: string, startDate: string, endDate: string, limit: number = 100, offset: number = 0): Promise<{ items: AnalyticsEvent[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query(
-      'SELECT COUNT(*) FROM analytics_events WHERE organization_id = $1 AND timestamp >= $2 AND timestamp <= $3',
-      [organizationId, startDate, endDate]
-    );
+      const conversion_to_next = user_count > 0 ? (next_step_count / user_count) * 100 : 0;
 
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE organization_id = $1 AND timestamp >= $2 AND timestamp <= $3 ORDER BY timestamp DESC LIMIT $4 OFFSET $5',
-      [organizationId, startDate, endDate, limit, offset]
-    );
-
-    return { items: result.rows, total: parseInt(countResult.rows[0].count, 10) };
-  },
-
-  async getEventsByUser(organizationId: string, userId: string, limit: number = 100, offset: number = 0): Promise<{ items: AnalyticsEvent[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query(
-      'SELECT COUNT(*) FROM analytics_events WHERE organization_id = $1 AND user_id = $2',
-      [organizationId, userId]
-    );
-
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE organization_id = $1 AND user_id = $2 ORDER BY timestamp DESC LIMIT $3 OFFSET $4',
-      [organizationId, userId, limit, offset]
-    );
-
-    return { items: result.rows, total: parseInt(countResult.rows[0].count, 10) };
-  },
-
-  async getEventsByContact(organizationId: string, contactId: string, limit: number = 100, offset: number = 0): Promise<{ items: AnalyticsEvent[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query(
-      'SELECT COUNT(*) FROM analytics_events WHERE organization_id = $1 AND contact_id = $2',
-      [organizationId, contactId]
-    );
-
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE organization_id = $1 AND contact_id = $2 ORDER BY timestamp DESC LIMIT $3 OFFSET $4',
-      [organizationId, contactId, limit, offset]
-    );
-
-    return { items: result.rows, total: parseInt(countResult.rows[0].count, 10) };
-  },
-
-  async getEventsBySession(organizationId: string, sessionId: string): Promise<AnalyticsEvent[]> {
-    const connection = await getConnection();
-    const result = await connection.query(
-      'SELECT * FROM analytics_events WHERE organization_id = $1 AND session_id = $2 ORDER BY timestamp ASC',
-      [organizationId, sessionId]
-    );
-
-    return result.rows;
-  },
-
-  async getEventSummary(organizationId: string, startDate: string, endDate: string): Promise<Record<string, number>> {
-    const connection = await getConnection();
-    const result = await connection.query(
-      `SELECT event_type, COUNT(*) as count FROM analytics_events
-       WHERE organization_id = $1 AND timestamp >= $2 AND timestamp <= $3
-       GROUP BY event_type`,
-      [organizationId, startDate, endDate]
-    );
-
-    const summary: Record<string, number> = {};
-    result.rows.forEach((row) => {
-      summary[row.event_type] = parseInt(row.count, 10);
+      return {
+        step_number: index + 1,
+        name: step.name,
+        event_type: step.event_type,
+        user_count,
+        conversion_to_next
+      };
     });
 
-    return summary;
-  },
+    const first_step = funnelSteps[0]?.user_count || 1;
+    const last_step = funnelSteps[funnelSteps.length - 1]?.user_count || 1;
+    const overall_conversion = (last_step / first_step) * 100;
 
-  async deleteOldEvents(organizationId: string, daysOld: number = 90): Promise<number> {
-    const connection = await getConnection();
-    const result = await connection.query(
-      `DELETE FROM analytics_events
-       WHERE organization_id = $1 AND timestamp < NOW() - INTERVAL '${daysOld} days'`,
-      [organizationId]
-    );
+    const funnel: AnalyticsFunnel = {
+      id,
+      organization_id,
+      name,
+      description,
+      steps: funnelSteps,
+      conversion_rate: overall_conversion,
+      created_at: new Date()
+    };
 
-    return result.rowCount;
-  },
-};
+    this.funnels.set(id, funnel);
+    return funnel;
+  }
+
+  getFunnelById(organization_id: string, funnel_id: string): AnalyticsFunnel | null {
+    const funnel = this.funnels.get(funnel_id);
+    if (!funnel || funnel.organization_id !== organization_id) {
+      return null;
+    }
+    return funnel;
+  }
+
+  getOrganizationFunnels(organization_id: string): AnalyticsFunnel[] {
+    return Array.from(this.funnels.values()).filter(f => f.organization_id === organization_id);
+  }
+
+  deleteFunnel(organization_id: string, funnel_id: string): boolean {
+    const funnel = this.getFunnelById(organization_id, funnel_id);
+    if (!funnel) return false;
+
+    return this.funnels.delete(funnel_id);
+  }
+
+  createCohort(
+    organization_id: string,
+    name: string,
+    description: string,
+    criteria: CohortCriteria
+  ): Cohort {
+    if (!name || !criteria) {
+      throw new Error('Cohort name and criteria are required');
+    }
+
+    const id = `cohort_${this.nextCohortId++}`;
+    
+    // Count members matching criteria
+    const members = new Set(
+      this.events
+        .filter(e => e.organization_id === organization_id)
+        .map(e => e.user_id)
+    ).size;
+
+    const cohort: Cohort = {
+      id,
+      organization_id,
+      name,
+      description,
+      criteria,
+      member_count: members,
+      created_date: new Date(),
+      last_updated: new Date()
+    };
+
+    this.cohorts.set(id, cohort);
+    return cohort;
+  }
+
+  getCohortById(organization_id: string, cohort_id: string): Cohort | null {
+    const cohort = this.cohorts.get(cohort_id);
+    if (!cohort || cohort.organization_id !== organization_id) {
+      return null;
+    }
+    return cohort;
+  }
+
+  getOrganizationCohorts(organization_id: string): Cohort[] {
+    return Array.from(this.cohorts.values()).filter(c => c.organization_id === organization_id);
+  }
+
+  updateCohort(
+    organization_id: string,
+    cohort_id: string,
+    updates: Partial<Cohort>
+  ): Cohort | null {
+    const cohort = this.getCohortById(organization_id, cohort_id);
+    if (!cohort) return null;
+
+    const updated = {
+      ...cohort,
+      ...updates,
+      id: cohort.id,
+      organization_id: cohort.organization_id,
+      created_date: cohort.created_date,
+      last_updated: new Date()
+    };
+
+    this.cohorts.set(cohort_id, updated);
+    return updated;
+  }
+
+  deleteCohort(organization_id: string, cohort_id: string): boolean {
+    const cohort = this.getCohortById(organization_id, cohort_id);
+    if (!cohort) return false;
+
+    return this.cohorts.delete(cohort_id);
+  }
+
+  getEventSummary(organization_id: string): {
+    total_events: number;
+    unique_users: number;
+    unique_event_types: number;
+    events_last_24h: number;
+  } {
+    const org_events = this.events.filter(e => e.organization_id === organization_id);
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    return {
+      total_events: org_events.length,
+      unique_users: new Set(org_events.map(e => e.user_id).filter(Boolean)).size,
+      unique_event_types: new Set(org_events.map(e => e.event_type)).size,
+      events_last_24h: org_events.filter(e => e.timestamp >= yesterday).length
+    };
+  }
+}

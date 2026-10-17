@@ -1,37 +1,41 @@
-import { DashboardService } from '../../domains/business-intelligence/services/DashboardService';
-
-export default async function handler(req: any) {
+export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
-    return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  try {
-    const organizationId = req.headers['x-organization-id'];
-    if (!organizationId) {
-      return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
-    }
+  const organization_id = req.headers['x-organization-id'];
+  const user_id = req.headers['x-user-id'];
 
-    const userId = req.headers['x-user-id'];
-    if (!userId) {
-      return { statusCode: 401, body: JSON.stringify({ error: 'Unauthorized' }) };
-    }
-
-    const { name, description, type, layout, widgets, filters, isDefault } = req.body;
-    const dashboardService = new DashboardService({} as any);
-
-    const dashboard = await dashboardService.createDashboard(organizationId, {
-      name,
-      description,
-      type,
-      layout,
-      widgets,
-      filters,
-      isDefault,
-    }, userId);
-
-    return { statusCode: 201, body: JSON.stringify(dashboard) };
-  } catch (error: any) {
-    console.error('Failed to create dashboard:', error);
-    return { statusCode: 500, body: JSON.stringify({ error: error.message || 'Internal server error' }) };
+  if (!organization_id || !user_id) {
+    return res.status(400).json({ error: 'Missing organization_id or user_id headers' });
   }
+
+  const { name, description, type } = req.body;
+
+  if (!name || !type) {
+    return res.status(400).json({ error: 'Dashboard name and type are required' });
+  }
+
+  const dashboard = {
+    id: `dashboard_${Date.now()}`,
+    organization_id,
+    name,
+    description,
+    type,
+    layout: {
+      rows: 4,
+      cols: 12,
+      gaps: { horizontal: 16, vertical: 16 },
+      widgets_positions: {}
+    },
+    widgets: [],
+    refresh_interval: 60,
+    created_by: user_id,
+    updated_by: user_id,
+    is_public: false,
+    created_at: new Date(),
+    updated_at: new Date()
+  };
+
+  return res.status(201).json(dashboard);
 }

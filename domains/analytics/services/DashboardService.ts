@@ -1,201 +1,299 @@
-import { getConnection } from '../../../platform/database/connection';
-import { ValidationError, NotFoundError } from '../../../platform/errors/errors';
-import { Dashboard, DashboardWidget, DashboardCreateInput, DASHBOARD_LAYOUTS, WIDGET_CHART_TYPES, WIDGET_TIME_RANGES } from '../models/index';
+import { Dashboard, DashboardLayout, DashboardWidget, WidgetConfig, Filter, DrillDownConfig } from '../models/index.js';
 
-export const dashboardService = {
-  async createDashboard(organizationId: string, input: DashboardCreateInput): Promise<Dashboard> {
-    if (!input.name?.trim()) {
-      throw new ValidationError('Dashboard name is required');
+export class DashboardService {
+  private dashboards: Map<string, Dashboard> = new Map();
+  private widgets: Map<string, DashboardWidget> = new Map();
+  private nextDashboardId = 1;
+  private nextWidgetId = 1;
+
+  createDashboard(
+    organization_id: string,
+    name: string,
+    description: string,
+    type: string,
+    created_by: string
+  ): Dashboard {
+    if (!name || name.trim().length === 0) {
+      throw new Error('Dashboard name is required');
     }
-    if (!DASHBOARD_LAYOUTS.includes(input.layout)) {
-      throw new ValidationError(`Invalid layout: ${input.layout}`);
-    }
 
-    const connection = await getConnection();
-    const result = await connection.query(
-      `INSERT INTO dashboards (organization_id, name, description, layout, is_public, access_control, status, created_by, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, NOW(), NOW())
-       RETURNING *`,
-      [organizationId, input.name, input.description || null, input.layout, input.isPublic || false, JSON.stringify(input.accessControl || []), organizationId]
-    );
+    const id = `dashboard_${this.nextDashboardId++}`;
+    const dashboard: Dashboard = {
+      id,
+      organization_id,
+      name,
+      description,
+      type: type as 'executive' | 'sales' | 'finance' | 'project' | 'marketing' | 'custom',
+      layout: {
+        rows: 4,
+        cols: 12,
+        gaps: { horizontal: 16, vertical: 16 },
+        widgets_positions: {}
+      },
+      widgets: [],
+      refresh_interval: 60,
+      created_by,
+      updated_by: created_by,
+      is_public: false,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
 
-    const dashboard = result.rows[0];
-    dashboard.widgets = [];
+    this.dashboards.set(id, dashboard);
     return dashboard;
-  },
+  }
 
-  async getDashboardById(dashboardId: string, organizationId: string): Promise<Dashboard> {
-    const connection = await getConnection();
-    const result = await connection.query(
-      'SELECT * FROM dashboards WHERE id = $1 AND organization_id = $2',
-      [dashboardId, organizationId]
-    );
-
-    if (result.rows.length === 0) {
-      throw new NotFoundError('Dashboard not found');
+  getDashboardById(organization_id: string, dashboard_id: string): Dashboard | null {
+    const dashboard = this.dashboards.get(dashboard_id);
+    if (!dashboard || dashboard.organization_id !== organization_id) {
+      return null;
     }
-
-    const dashboard = result.rows[0];
-    const widgetResult = await connection.query(
-      'SELECT * FROM dashboard_widgets WHERE dashboard_id = $1 ORDER BY position ASC',
-      [dashboardId]
-    );
-
-    dashboard.widgets = widgetResult.rows;
     return dashboard;
-  },
+  }
 
-  async getOrganizationDashboards(organizationId: string, limit: number = 50, offset: number = 0): Promise<{ items: Dashboard[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query(
-      'SELECT COUNT(*) FROM dashboards WHERE organization_id = $1',
-      [organizationId]
-    );
+  getOrganizationDashboards(organization_id: string, type?: string): Dashboard[] {
+    return Array.from(this.dashboards.values()).filter(d => {
+      if (d.organization_id !== organization_id) return false;
+      if (type && d.type !== type) return false;
+      return true;
+    });
+  }
 
-    const result = await connection.query(
-      'SELECT * FROM dashboards WHERE organization_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
-      [organizationId, limit, offset]
-    );
+  updateDashboard(
+    organization_id: string,
+    dashboard_id: string,
+    updates: Partial<Dashboard>
+  ): Dashboard | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
 
-    const dashboards = await Promise.all(
-      result.rows.map(async (dashboard) => {
-        const widgetResult = await connection.query(
-          'SELECT * FROM dashboard_widgets WHERE dashboard_id = $1 ORDER BY position ASC',
-          [dashboard.id]
-        );
-        dashboard.widgets = widgetResult.rows;
-        return dashboard;
-      })
-    );
+    const updated = {
+      ...dashboard,
+      ...updates,
+      id: dashboard.id,
+      organization_id: dashboard.organization_id,
+      created_by: dashboard.created_by,
+      updated_at: new Date()
+    };
 
-    return { items: dashboards, total: parseInt(countResult.rows[0].count, 10) };
-  },
+    this.dashboards.set(dashboard_id, updated);
+    return updated;
+  }
 
-  async updateDashboard(dashboardId: string, organizationId: string, updates: Partial<DashboardCreateInput>): Promise<Dashboard> {
-    const dashboard = await this.getDashboardById(dashboardId, organizationId);
+  deleteDashboard(organization_id: string, dashboard_id: string): boolean {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return false;
 
-    if (updates.layout && !DASHBOARD_LAYOUTS.includes(updates.layout)) {
-      throw new ValidationError(`Invalid layout: ${updates.layout}`);
+    // Remove all widgets from this dashboard
+    dashboard.widgets.forEach(w => this.widgets.delete(w.id));
+
+    return this.dashboards.delete(dashboard_id);
+  }
+
+  addWidget(
+    organization_id: string,
+    dashboard_id: string,
+    title: string,
+    type: string,
+    data_source_id: string,
+    config: WidgetConfig
+  ): DashboardWidget | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    const id = `widget_${this.nextWidgetId++}`;
+    const widget: DashboardWidget = {
+      id,
+      dashboard_id,
+      type: type as 'chart' | 'metric' | 'table' | 'gauge' | 'timeline' | 'heatmap' | 'custom',
+      title,
+      data_source_id,
+      config,
+      dimensions: [],
+      measures: [],
+      filters: [],
+      drill_downs: [],
+      refresh_interval: 60
+    };
+
+    this.widgets.set(id, widget);
+    dashboard.widgets.push(widget);
+
+    return widget;
+  }
+
+  removeWidget(organization_id: string, dashboard_id: string, widget_id: string): boolean {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return false;
+
+    const widget = this.widgets.get(widget_id);
+    if (!widget || widget.dashboard_id !== dashboard_id) return false;
+
+    dashboard.widgets = dashboard.widgets.filter(w => w.id !== widget_id);
+    return this.widgets.delete(widget_id);
+  }
+
+  updateWidgetConfig(
+    organization_id: string,
+    dashboard_id: string,
+    widget_id: string,
+    config: Partial<WidgetConfig>
+  ): DashboardWidget | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    const widget = this.widgets.get(widget_id);
+    if (!widget || widget.dashboard_id !== dashboard_id) return null;
+
+    widget.config = { ...widget.config, ...config };
+    return widget;
+  }
+
+  updateDashboardLayout(
+    organization_id: string,
+    dashboard_id: string,
+    layout: Partial<DashboardLayout>
+  ): Dashboard | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    dashboard.layout = { ...dashboard.layout, ...layout };
+    dashboard.updated_at = new Date();
+
+    this.dashboards.set(dashboard_id, dashboard);
+    return dashboard;
+  }
+
+  setWidgetPosition(
+    organization_id: string,
+    dashboard_id: string,
+    widget_id: string,
+    row: number,
+    col: number,
+    width: number,
+    height: number
+  ): Dashboard | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    const widget = this.widgets.get(widget_id);
+    if (!widget || widget.dashboard_id !== dashboard_id) return null;
+
+    dashboard.layout.widgets_positions[widget_id] = {
+      row,
+      col,
+      width,
+      height
+    };
+
+    dashboard.updated_at = new Date();
+    this.dashboards.set(dashboard_id, dashboard);
+    return dashboard;
+  }
+
+  addFilterToWidget(
+    organization_id: string,
+    dashboard_id: string,
+    widget_id: string,
+    filter: Filter
+  ): DashboardWidget | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    const widget = this.widgets.get(widget_id);
+    if (!widget || widget.dashboard_id !== dashboard_id) return null;
+
+    widget.filters.push(filter);
+    return widget;
+  }
+
+  removeFilterFromWidget(
+    organization_id: string,
+    dashboard_id: string,
+    widget_id: string,
+    filter_index: number
+  ): DashboardWidget | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    const widget = this.widgets.get(widget_id);
+    if (!widget || widget.dashboard_id !== dashboard_id) return null;
+
+    if (filter_index < 0 || filter_index >= widget.filters.length) return null;
+
+    widget.filters.splice(filter_index, 1);
+    return widget;
+  }
+
+  addDrillDown(
+    organization_id: string,
+    dashboard_id: string,
+    widget_id: string,
+    drill_down: DrillDownConfig
+  ): DashboardWidget | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    const widget = this.widgets.get(widget_id);
+    if (!widget || widget.dashboard_id !== dashboard_id) return null;
+
+    widget.drill_downs.push(drill_down);
+    return widget;
+  }
+
+  publishDashboard(organization_id: string, dashboard_id: string): Dashboard | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    dashboard.is_public = true;
+    dashboard.updated_at = new Date();
+
+    this.dashboards.set(dashboard_id, dashboard);
+    return dashboard;
+  }
+
+  unpublishDashboard(organization_id: string, dashboard_id: string): Dashboard | null {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) return null;
+
+    dashboard.is_public = false;
+    dashboard.updated_at = new Date();
+
+    this.dashboards.set(dashboard_id, dashboard);
+    return dashboard;
+  }
+
+  getDashboardMetrics(organization_id: string, dashboard_id: string): {
+    widget_count: number;
+    data_sources: Set<string>;
+    dimensions: Set<string>;
+    measures: Set<string>;
+  } {
+    const dashboard = this.getDashboardById(organization_id, dashboard_id);
+    if (!dashboard) {
+      return {
+        widget_count: 0,
+        data_sources: new Set(),
+        dimensions: new Set(),
+        measures: new Set()
+      };
     }
 
-    const connection = await getConnection();
-    const result = await connection.query(
-      `UPDATE dashboards SET
-       name = COALESCE($1, name),
-       description = COALESCE($2, description),
-       layout = COALESCE($3, layout),
-       is_public = COALESCE($4, is_public),
-       access_control = COALESCE($5, access_control),
-       updated_at = NOW()
-       WHERE id = $6 AND organization_id = $7
-       RETURNING *`,
-      [updates.name || null, updates.description || null, updates.layout || null, updates.isPublic !== undefined ? updates.isPublic : null, updates.accessControl ? JSON.stringify(updates.accessControl) : null, dashboardId, organizationId]
-    );
+    const data_sources = new Set<string>();
+    const dimensions = new Set<string>();
+    const measures = new Set<string>();
 
-    const updatedDashboard = result.rows[0];
-    updatedDashboard.widgets = dashboard.widgets;
-    return updatedDashboard;
-  },
+    dashboard.widgets.forEach(w => {
+      data_sources.add(w.data_source_id);
+      w.dimensions.forEach(d => dimensions.add(d));
+      w.measures.forEach(m => measures.add(m));
+    });
 
-  async addWidget(dashboardId: string, organizationId: string, metricId: string, widget: Omit<DashboardWidget, 'id' | 'dashboardId'>): Promise<DashboardWidget> {
-    if (!WIDGET_CHART_TYPES.includes(widget.chartType)) {
-      throw new ValidationError(`Invalid chart type: ${widget.chartType}`);
-    }
-    if (!WIDGET_TIME_RANGES.includes(widget.timeRange)) {
-      throw new ValidationError(`Invalid time range: ${widget.timeRange}`);
-    }
-
-    const dashboard = await this.getDashboardById(dashboardId, organizationId);
-
-    const connection = await getConnection();
-    const result = await connection.query(
-      `INSERT INTO dashboard_widgets (dashboard_id, metric_id, position, width, height, chart_type, time_range, refresh_interval)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [dashboardId, metricId, widget.position, widget.width, widget.height, widget.chartType, widget.timeRange, widget.refreshInterval]
-    );
-
-    return result.rows[0];
-  },
-
-  async updateWidget(dashboardId: string, widgetId: string, organizationId: string, updates: Partial<Omit<DashboardWidget, 'id' | 'dashboardId'>>): Promise<DashboardWidget> {
-    await this.getDashboardById(dashboardId, organizationId);
-
-    if (updates.chartType && !WIDGET_CHART_TYPES.includes(updates.chartType)) {
-      throw new ValidationError(`Invalid chart type: ${updates.chartType}`);
-    }
-    if (updates.timeRange && !WIDGET_TIME_RANGES.includes(updates.timeRange)) {
-      throw new ValidationError(`Invalid time range: ${updates.timeRange}`);
-    }
-
-    const connection = await getConnection();
-    const result = await connection.query(
-      `UPDATE dashboard_widgets SET
-       position = COALESCE($1, position),
-       width = COALESCE($2, width),
-       height = COALESCE($3, height),
-       chart_type = COALESCE($4, chart_type),
-       time_range = COALESCE($5, time_range),
-       refresh_interval = COALESCE($6, refresh_interval)
-       WHERE id = $7 AND dashboard_id = $8
-       RETURNING *`,
-      [updates.position !== undefined ? updates.position : null, updates.width || null, updates.height || null, updates.chartType || null, updates.timeRange || null, updates.refreshInterval || null, widgetId, dashboardId]
-    );
-
-    if (result.rows.length === 0) {
-      throw new NotFoundError('Widget not found');
-    }
-
-    return result.rows[0];
-  },
-
-  async removeWidget(dashboardId: string, widgetId: string, organizationId: string): Promise<void> {
-    await this.getDashboardById(dashboardId, organizationId);
-
-    const connection = await getConnection();
-    const result = await connection.query(
-      'DELETE FROM dashboard_widgets WHERE id = $1 AND dashboard_id = $2',
-      [widgetId, dashboardId]
-    );
-
-    if (result.rowCount === 0) {
-      throw new NotFoundError('Widget not found');
-    }
-  },
-
-  async deleteDashboard(dashboardId: string, organizationId: string): Promise<void> {
-    const connection = await getConnection();
-    await connection.query('DELETE FROM dashboard_widgets WHERE dashboard_id = $1', [dashboardId]);
-    const result = await connection.query(
-      'DELETE FROM dashboards WHERE id = $1 AND organization_id = $2',
-      [dashboardId, organizationId]
-    );
-
-    if (result.rowCount === 0) {
-      throw new NotFoundError('Dashboard not found');
-    }
-  },
-
-  async getPublicDashboards(limit: number = 50, offset: number = 0): Promise<{ items: Dashboard[]; total: number }> {
-    const connection = await getConnection();
-    const countResult = await connection.query('SELECT COUNT(*) FROM dashboards WHERE is_public = true');
-
-    const result = await connection.query(
-      'SELECT * FROM dashboards WHERE is_public = true ORDER BY created_at DESC LIMIT $1 OFFSET $2',
-      [limit, offset]
-    );
-
-    const dashboards = await Promise.all(
-      result.rows.map(async (dashboard) => {
-        const widgetResult = await connection.query(
-          'SELECT * FROM dashboard_widgets WHERE dashboard_id = $1 ORDER BY position ASC',
-          [dashboard.id]
-        );
-        dashboard.widgets = widgetResult.rows;
-        return dashboard;
-      })
-    );
-
-    return { items: dashboards, total: parseInt(countResult.rows[0].count, 10) };
-  },
-};
+    return {
+      widget_count: dashboard.widgets.length,
+      data_sources,
+      dimensions,
+      measures
+    };
+  }
+}
