@@ -1,200 +1,178 @@
-// AI & Orchestration Domain Models
+// AI Agent Models & Types
 
-// AI Agent
+export const AGENT_TYPES = ['sales', 'finance', 'project', 'writer', 'brand', 'voice'] as const;
+export const AGENT_STATUSES = ['idle', 'running', 'completed', 'failed', 'pending_approval'] as const;
+export const TOOL_CATEGORIES = ['crm', 'finance', 'project', 'content', 'communication', 'analytics'] as const;
+export const APPROVAL_STATUSES = ['pending', 'approved', 'rejected'] as const;
+
 export interface AIAgent {
   id: string;
   organizationId: string;
+  type: typeof AGENT_TYPES[number];
   name: string;
-  description: string;
-  type: 'workflow' | 'assistant' | 'specialist' | 'decision_engine';
-  status: 'active' | 'inactive' | 'archived';
+  description?: string;
   systemPrompt: string;
-  capabilities: string[];
-  riskLevel: 'low' | 'medium' | 'high';
+  tools: string[];
   requiresApproval: boolean;
+  approvalThreshold?: number;
+  enabled: boolean;
   createdBy: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-export interface AIAgentCreateInput {
-  name: string;
-  description: string;
-  type: 'workflow' | 'assistant' | 'specialist' | 'decision_engine';
-  systemPrompt: string;
-  capabilities: string[];
-  riskLevel: 'low' | 'medium' | 'high';
-  requiresApproval?: boolean;
-}
-
-// Agent Execution
-export interface AgentExecution {
+export interface AgentTool {
   id: string;
   organizationId: string;
   agentId: string;
-  context: Record<string, any>;
-  input: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'approved' | 'rejected';
-  result?: Record<string, any>;
-  errorMessage?: string;
+  name: string;
+  category: typeof TOOL_CATEGORIES[number];
+  description: string;
+  inputSchema: Record<string, any>;
+  outputSchema: Record<string, any>;
+  requiresApproval: boolean;
+  rateLimit?: number;
+  createdAt: Date;
+}
+
+export interface AgentRun {
+  id: string;
+  organizationId: string;
+  agentId: string;
+  agentType: typeof AGENT_TYPES[number];
+  status: typeof AGENT_STATUSES[number];
+  input: Record<string, any>;
+  output?: Record<string, any>;
+  toolCalls: ToolCall[];
+  error?: string;
   approvalRequired: boolean;
+  approvalStatus?: typeof APPROVAL_STATUSES[number];
+  approvalReason?: string;
+  startedAt: Date;
+  completedAt?: Date;
+  createdAt: Date;
+}
+
+export interface ToolCall {
+  id: string;
+  toolName: string;
+  input: Record<string, any>;
+  output?: Record<string, any>;
+  error?: string;
+  timestamp: Date;
+  executedAt?: Date;
+}
+
+export interface AgentApproval {
+  id: string;
+  organizationId: string;
+  runId: string;
+  agentId: string;
+  status: typeof APPROVAL_STATUSES[number];
+  requestedBy: string;
   approvedBy?: string;
-  approvedAt?: string;
-  executedBy: string;
-  executedAt: string;
-  completedAt?: string;
-  createdAt: string;
-  updatedAt: string;
+  reason?: string;
+  impact?: string;
+  metadata?: Record<string, any>;
+  createdAt: Date;
+  reviewedAt?: Date;
 }
 
-export interface AgentExecutionCreateInput {
+export interface AgentEvaluation {
+  id: string;
+  organizationId: string;
+  runId: string;
   agentId: string;
-  context?: Record<string, any>;
-  input: string;
+  quality: number;
+  correctness: number;
+  completeness: number;
+  relevance: number;
+  notes?: string;
+  evaluatedBy?: string;
+  timestamp: Date;
 }
 
-// Workflow
-export interface Workflow {
+export interface KnowledgeSource {
   id: string;
   organizationId: string;
   name: string;
-  description: string;
-  trigger: 'manual' | 'event' | 'schedule' | 'webhook';
-  steps: WorkflowStep[];
-  status: 'draft' | 'active' | 'paused' | 'archived';
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
+  type: 'document' | 'database' | 'api' | 'file';
+  content: string;
+  category: string;
+  updated: Date;
+  relevance?: number;
 }
 
-export interface WorkflowStep {
-  id: string;
-  workflowId: string;
-  stepNumber: number;
-  name: string;
-  action: string;
-  parameters: Record<string, any>;
-  condition?: string;
-  onSuccess?: string;
-  onFailure?: string;
-  createdAt: string;
-}
-
-export interface WorkflowCreateInput {
-  name: string;
-  description: string;
-  trigger: 'manual' | 'event' | 'schedule' | 'webhook';
-  steps: Array<{
-    name: string;
-    action: string;
-    parameters: Record<string, any>;
-    condition?: string;
-    onSuccess?: string;
-    onFailure?: string;
-  }>;
-}
-
-// Workflow Execution
-export interface WorkflowExecution {
-  id: string;
-  organizationId: string;
-  workflowId: string;
-  context: Record<string, any>;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'paused';
-  currentStep?: number;
-  stepResults: Array<{
-    stepId: string;
-    status: 'pending' | 'completed' | 'failed';
-    result?: Record<string, any>;
-    error?: string;
-  }>;
-  errorMessage?: string;
-  triggeredBy: string;
-  triggeredAt: string;
-  completedAt?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface WorkflowExecutionCreateInput {
-  workflowId: string;
-  context?: Record<string, any>;
-}
-
-// Integration Hook
-export interface IntegrationHook {
-  id: string;
-  organizationId: string;
-  name: string;
-  description: string;
-  eventType: string;
-  service: 'crm' | 'sales' | 'delivery' | 'finance' | 'communications' | 'external';
-  action: string;
-  targetAgentId?: string;
-  targetWorkflowId?: string;
-  status: 'active' | 'inactive';
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface IntegrationHookCreateInput {
-  name: string;
-  description: string;
-  eventType: string;
-  service: 'crm' | 'sales' | 'delivery' | 'finance' | 'communications' | 'external';
-  action: string;
-  targetAgentId?: string;
-  targetWorkflowId?: string;
-}
-
-// AI Evaluation
-export interface AIEvaluation {
+export interface AgentPermission {
   id: string;
   organizationId: string;
   agentId: string;
-  executionId: string;
-  metric: 'accuracy' | 'relevance' | 'safety' | 'completeness' | 'tone_match';
-  score: number;
-  feedback: string;
-  evaluatedBy: string;
-  evaluatedAt: string;
-  createdAt: string;
+  resource: string;
+  action: 'read' | 'write' | 'delete' | 'execute';
+  conditions?: Record<string, any>;
+  createdAt: Date;
 }
 
-export interface AIEvaluationCreateInput {
-  agentId: string;
-  executionId: string;
-  metric: 'accuracy' | 'relevance' | 'safety' | 'completeness' | 'tone_match';
-  score: number;
-  feedback: string;
+export interface SalesAgentConfig {
+  autoQualifyLeads: boolean;
+  proposalGenerationTemplate: string;
+  followUpFrequency: number;
+  maxProposalsPerDay: number;
 }
 
-// Constants
-export const AGENT_TYPES = ['workflow', 'assistant', 'specialist', 'decision_engine'] as const;
-export const AGENT_STATUSES = ['active', 'inactive', 'archived'] as const;
-export const RISK_LEVELS = ['low', 'medium', 'high'] as const;
-export const EXECUTION_STATUSES = ['pending', 'running', 'completed', 'failed', 'approved', 'rejected'] as const;
-export const WORKFLOW_TRIGGERS = ['manual', 'event', 'schedule', 'webhook'] as const;
-export const WORKFLOW_STATUSES = ['draft', 'active', 'paused', 'archived'] as const;
-export const EVAL_METRICS = ['accuracy', 'relevance', 'safety', 'completeness', 'tone_match'] as const;
+export interface FinanceAgentConfig {
+  autoReconcile: boolean;
+  recurringTransactionDetection: boolean;
+  taxCalculationEnabled: boolean;
+  budgetAlertThreshold: number;
+}
 
-// Common Agent Capabilities
-export const COMMON_CAPABILITIES = [
-  'email_analysis',
-  'document_generation',
-  'data_extraction',
-  'lead_scoring',
-  'proposal_generation',
-  'contract_review',
-  'email_composition',
-  'meeting_scheduling',
-  'task_creation',
-  'status_updates',
-  'financial_reporting',
-  'invoice_generation',
-  'payment_processing',
-  'client_communication',
-  'project_milestone_tracking',
-  'deliverable_approval',
-] as const;
+export interface ProjectAgentConfig {
+  autoAssignTasks: boolean;
+  riskDetection: boolean;
+  resourceOptimization: boolean;
+  milestoneTracking: boolean;
+}
+
+export interface WriterAgentConfig {
+  brandVoiceEnabled: boolean;
+  languagePreference: 'en' | 'ar' | 'bilingual';
+  contentTemplates: string[];
+  grammarCheckEnabled: boolean;
+}
+
+export interface BrandAgentConfig {
+  enforceGuidelines: boolean;
+  colorPaletteLock: boolean;
+  typographyRules: string[];
+  toneLock: boolean;
+}
+
+export interface VoiceAgentConfig {
+  transcriptionEnabled: boolean;
+  languageDetection: boolean;
+  sentimentAnalysis: boolean;
+  callRecordingRetention: number;
+}
+
+export interface AgentMetrics {
+  totalRuns: number;
+  successfulRuns: number;
+  failedRuns: number;
+  avgExecutionTime: number;
+  approvalRate: number;
+  avgQualityScore: number;
+  toolUsageStats: Record<string, number>;
+}
+
+export interface AgentChain {
+  id: string;
+  organizationId: string;
+  name: string;
+  agents: string[];
+  inputMapping: Record<string, string>;
+  outputMapping: Record<string, string>;
+  conditionRules?: Array<{ condition: string; next: string }>;
+  enabled: boolean;
+  createdAt: Date;
+}
